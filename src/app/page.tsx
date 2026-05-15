@@ -1,65 +1,674 @@
-import Image from "next/image";
+"use client";
+
+import {
+  AlertTriangle,
+  Archive,
+  BarChart3,
+  Boxes,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  CircleDollarSign,
+  ClipboardPaste,
+  Database,
+  Download,
+  Home as HomeIcon,
+  Menu,
+  PackagePlus,
+  ReceiptText,
+  RefreshCw,
+  Search,
+  Settings,
+  ShoppingBag,
+  Truck,
+  Users,
+  WalletCards,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { clsx } from "clsx";
+import {
+  currency,
+  dashboardMetrics,
+  feeBreakdown,
+  orderCogs,
+  orderFees,
+  orderGross,
+  orderMargin,
+  orderProfit,
+  orderShipping,
+  percent,
+  profitTrend,
+  salesByItem,
+} from "@/lib/calculations";
+import { demoInventory, demoOrders, sampleOrderPaste, sampleTransactionPaste } from "@/lib/demo-data";
+import { parseWalmartImport } from "@/lib/parser";
+import { isSupabaseConfigured, loadDashboardData, saveParsedImport, updateInventoryItem } from "@/lib/supabase";
+import type { InventoryItem, OrderView, ParsedImport, ParsedOrder } from "@/lib/types";
+
+const views = [
+  { id: "dashboard", label: "Dashboard", icon: HomeIcon },
+  { id: "import", label: "Paste Import", icon: ClipboardPaste },
+  { id: "orders", label: "Orders / Sales", icon: ShoppingBag },
+  { id: "inventory", label: "Inventory", icon: Boxes },
+  { id: "reports", label: "Reports", icon: BarChart3 },
+  { id: "settings", label: "Settings", icon: Settings },
+] as const;
+
+const pieColors = ["#7067ff", "#4fc67a", "#ffb14f", "#f174a6", "#9aa7c7"];
+
+type ViewId = (typeof views)[number]["id"];
+
+function statusClass(status?: string | null) {
+  if (/out/i.test(status || "")) return "badge danger";
+  if (/need/i.test(status || "")) return "badge warning";
+  if (/low/i.test(status || "")) return "badge amber";
+  if (/pending/i.test(status || "")) return "badge blue";
+  return "badge success";
+}
+
+function inputValue(value: unknown) {
+  return value === undefined || value === null ? "" : String(value);
+}
 
 export default function Home() {
+  const configured = isSupabaseConfigured();
+  const [activeView, setActiveView] = useState<ViewId>("dashboard");
+  const [orders, setOrders] = useState<OrderView[]>(demoOrders);
+  const [inventory, setInventory] = useState<InventoryItem[]>(demoInventory);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [orderText, setOrderText] = useState(sampleOrderPaste);
+  const [transactionText, setTransactionText] = useState(sampleTransactionPaste);
+  const [preview, setPreview] = useState<ParsedImport | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!configured) {
+      setOrders(demoOrders);
+      setInventory(demoInventory);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await loadDashboardData();
+      setOrders(data.orders);
+      setInventory(data.inventory);
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load Supabase data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [configured]);
+
+  useEffect(() => {
+    if (!configured) return;
+    let cancelled = false;
+    async function loadInitialData() {
+      await Promise.resolve();
+      setLoading(true);
+      try {
+        const data = await loadDashboardData();
+        if (cancelled) return;
+        setOrders(data.orders);
+        setInventory(data.inventory);
+        setMessage("");
+      } catch (error) {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "Could not load Supabase data.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void loadInitialData();
+    return () => {
+      cancelled = true;
+    };
+  }, [configured]);
+
+  const metrics = useMemo(() => dashboardMetrics(orders, inventory), [orders, inventory]);
+  const trend = useMemo(() => profitTrend(orders, inventory), [orders, inventory]);
+  const itemSales = useMemo(() => salesByItem(orders, inventory), [orders, inventory]);
+  const fees = useMemo(() => feeBreakdown(orders), [orders]);
+  const recentOrders = orders.slice(0, 5);
+  const needsCost = inventory.filter((item) => item.needs_cost || !Number(item.unit_cost));
+
+  const parsePreview = () => {
+    const parsed = parseWalmartImport(orderText, transactionText);
+    setPreview(parsed);
+    setMessage(parsed.warnings.length ? parsed.warnings.join(" ") : "Preview parsed. Review fields, then save.");
+  };
+
+  const updatePreviewOrder = (key: keyof ParsedOrder, value: string) => {
+    if (!preview) return;
+    const numericKeys = new Set(["quantity", "unit_price", "subtotal", "shipping_cost", "shipping_fee_charged", "taxes", "customer_total", "amount_adjusted"]);
+    setPreview({
+      ...preview,
+      order: {
+        ...preview.order,
+        [key]: numericKeys.has(key) ? Number(value) : value,
+      },
+    });
+  };
+
+  const savePreview = async () => {
+    if (!preview) return;
+    if (!configured) {
+      setMessage("Demo Mode is active. Add Supabase env vars to enable persistent saving.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveParsedImport(preview);
+      setMessage(`Saved PO ${preview.order.po_number} to Supabase and refreshed the dashboard.`);
+      setPreview(null);
+      await refresh();
+      setActiveView("dashboard");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Save failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateCost = async (item: InventoryItem, value: string) => {
+    const unitCost = Number(value);
+    if (!configured) {
+      setInventory((current) =>
+        current.map((candidate) =>
+          candidate.id === item.id ? { ...candidate, unit_cost: unitCost, needs_cost: !unitCost } : candidate,
+        ),
+      );
+      setMessage("Demo Mode cost updated locally for preview. Supabase is required for persistence.");
+      return;
+    }
+    await updateInventoryItem(item.id, { unit_cost: unitCost });
+    await refresh();
+  };
+
+  const mainTitle = views.find((view) => view.id === activeView)?.label ?? "Dashboard";
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="dashboard-shell">
+      <aside className="sidebar">
+        <div className="brand-row">
+          <div className="brand">Cherolee</div>
+          <Menu size={17} />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <nav className="side-nav">
+          {views.map((view) => {
+            const Icon = view.icon;
+            return (
+              <button
+                key={view.id}
+                className={clsx("nav-item", activeView === view.id && "active")}
+                onClick={() => setActiveView(view.id)}
+              >
+                <Icon size={17} />
+                <span>{view.label}</span>
+              </button>
+            );
+          })}
+          <button className="nav-item">
+            <Users size={17} />
+            <span>Customers</span>
+          </button>
+        </nav>
+
+        <div className="sidebar-block">
+          <p>Quick actions</p>
+          <button className="quick-action" onClick={() => setActiveView("import")}>
+            <ClipboardPaste size={16} />
+            Paste New Order
+          </button>
+          <button className="quick-action" onClick={() => setActiveView("inventory")}>
+            <PackagePlus size={16} />
+            Add Inventory Item
+          </button>
         </div>
+
+        <div className="sidebar-block">
+          <p>Alerts</p>
+          <div className="alert-row"><AlertTriangle size={15} /> Items needing cost <strong>{metrics.needsCost}</strong></div>
+          <div className="alert-row red"><AlertTriangle size={15} /> Low stock items <strong>{metrics.lowStock}</strong></div>
+          <div className="alert-row blue"><RefreshCw size={15} /> Pending transactions <strong>{metrics.pendingTransactions}</strong></div>
+        </div>
+
+        <div className="account">
+          <div className="avatar">C</div>
+          <div>
+            <strong>Cherolee LLC</strong>
+            <span>Seller Account</span>
+          </div>
+          <ChevronDown size={16} />
+        </div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <h1>{mainTitle === "Dashboard" ? "Dashboard Overview" : mainTitle}</h1>
+            <p>Track Walmart sales, fees, costs and profit.</p>
+          </div>
+          <div className="top-actions">
+            {!configured && <span className="demo-pill"><Database size={14} /> Demo Mode</span>}
+            <button className="filter-button"><CalendarDays size={15} /> May 1 - May 15, 2026</button>
+            <button className="filter-button">Compare</button>
+            <button className="export-button"><Download size={15} /> Export Report</button>
+          </div>
+        </header>
+
+        {message && <div className="message">{message}</div>}
+        {loading ? <div className="loading-card">Loading Supabase dashboard data...</div> : null}
+
+        {activeView === "dashboard" && (
+          <DashboardView
+            metrics={metrics}
+            trend={trend}
+            itemSales={itemSales}
+            fees={fees}
+            recentOrders={recentOrders}
+            inventory={inventory}
+            needsCost={needsCost}
+          />
+        )}
+
+        {activeView === "import" && (
+          <ImportView
+            orderText={orderText}
+            transactionText={transactionText}
+            setOrderText={setOrderText}
+            setTransactionText={setTransactionText}
+            preview={preview}
+            parsePreview={parsePreview}
+            savePreview={savePreview}
+            saving={saving}
+            updatePreviewOrder={updatePreviewOrder}
+          />
+        )}
+
+        {activeView === "orders" && <OrdersView orders={orders} inventory={inventory} />}
+        {activeView === "inventory" && <InventoryView inventory={inventory} updateCost={updateCost} />}
+        {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
+        {activeView === "settings" && <SettingsView configured={configured} />}
       </main>
     </div>
+  );
+}
+
+function DashboardView({
+  metrics,
+  trend,
+  itemSales,
+  fees,
+  recentOrders,
+  inventory,
+  needsCost,
+}: {
+  metrics: ReturnType<typeof dashboardMetrics>;
+  trend: ReturnType<typeof profitTrend>;
+  itemSales: ReturnType<typeof salesByItem>;
+  fees: ReturnType<typeof feeBreakdown>;
+  recentOrders: OrderView[];
+  inventory: InventoryItem[];
+  needsCost: InventoryItem[];
+}) {
+  const cards = [
+    { label: "Gross Revenue", value: currency(metrics.grossRevenue), icon: CircleDollarSign, tone: "green", delta: "12.4%" },
+    { label: "Net Profit", value: currency(metrics.netProfit), icon: WalletCards, tone: "green", delta: "18.7%" },
+    { label: "Total Fees", value: currency(metrics.walmartFees), icon: ReceiptText, tone: "red", delta: "2.9%" },
+    { label: "Shipping Costs", value: currency(metrics.shippingCosts), icon: Truck, tone: "blue", delta: "6.1%" },
+    { label: "COGS", value: currency(metrics.totalCogs), icon: Archive, tone: "purple", delta: "10.3%" },
+    { label: "Units Sold", value: String(metrics.unitsSold), icon: Boxes, tone: "teal", delta: "15.8%" },
+    { label: "Orders", value: String(metrics.ordersCount), icon: ShoppingBag, tone: "orange", delta: "14.7%" },
+  ];
+
+  return (
+    <div className="content-grid">
+      <section className="kpi-grid">
+        {cards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <article className="kpi-card" key={card.label}>
+              <div className={clsx("kpi-icon", card.tone)}><Icon size={18} /></div>
+              <div>
+                <span>{card.label}</span>
+                <strong>{card.value}</strong>
+                <small>↗ {card.delta} vs Apr 16-Apr 30</small>
+              </div>
+            </article>
+          );
+        })}
+      </section>
+
+      <section className="chart-card wide">
+        <div className="card-heading">
+          <h2>Profit Trend</h2>
+          <button className="tiny-button">Daily</button>
+        </div>
+        <ResponsiveContainer width="100%" height={210}>
+          <AreaChart data={trend}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(value) => `$${value}`} />
+            <Tooltip formatter={(value) => currency(Number(value))} />
+            <Area type="monotone" dataKey="gross" stroke="#6965ff" fill="#6965ff22" strokeWidth={2} name="Gross Revenue" />
+            <Area type="monotone" dataKey="profit" stroke="#2dbf6d" fill="#2dbf6d20" strokeWidth={2} name="Net Profit" />
+          </AreaChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section className="chart-card">
+        <div className="card-heading"><h2>Sales by Item (Top 5)</h2></div>
+        <ResponsiveContainer width="100%" height={210}>
+          <PieChart>
+            <Pie data={itemSales.slice(0, 5)} dataKey="sales" nameKey="name" innerRadius={48} outerRadius={78}>
+              {itemSales.slice(0, 5).map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
+            </Pie>
+            <Tooltip formatter={(value) => currency(Number(value))} />
+          </PieChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section className="chart-card">
+        <div className="card-heading"><h2>Fee Breakdown</h2></div>
+        <ResponsiveContainer width="100%" height={210}>
+          <PieChart>
+            <Pie data={fees.length ? fees : [{ name: "No fees", value: 1 }]} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78}>
+              {(fees.length ? fees : [{ name: "No fees", value: 1 }]).map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
+            </Pie>
+            <Tooltip formatter={(value) => currency(Number(value))} />
+          </PieChart>
+        </ResponsiveContainer>
+      </section>
+
+      <OrdersTable orders={recentOrders} inventory={inventory} compact />
+      <InventorySnapshot inventory={inventory.slice(0, 5)} />
+      <ProfitSummary metrics={metrics} />
+      <TopItems itemSales={itemSales} />
+      <NeedsCostTable items={needsCost} />
+    </div>
+  );
+}
+
+function ImportView(props: {
+  orderText: string;
+  transactionText: string;
+  setOrderText: (value: string) => void;
+  setTransactionText: (value: string) => void;
+  preview: ParsedImport | null;
+  parsePreview: () => void;
+  savePreview: () => void;
+  saving: boolean;
+  updatePreviewOrder: (key: keyof ParsedOrder, value: string) => void;
+}) {
+  const fields: { key: keyof ParsedOrder; label: string; type?: string }[] = [
+    { key: "po_number", label: "PO number" },
+    { key: "walmart_order_number", label: "Walmart order" },
+    { key: "product_name", label: "Product title" },
+    { key: "upc", label: "UPC" },
+    { key: "quantity", label: "Quantity", type: "number" },
+    { key: "unit_price", label: "Unit price", type: "number" },
+    { key: "subtotal", label: "Subtotal", type: "number" },
+    { key: "shipping_cost", label: "Shipping cost", type: "number" },
+    { key: "taxes", label: "Taxes", type: "number" },
+    { key: "customer_total", label: "Customer total", type: "number" },
+    { key: "customer_name", label: "Customer" },
+    { key: "status", label: "Status" },
+  ];
+
+  return (
+    <section className="import-layout">
+      <div className="paste-card">
+        <div className="card-heading"><h2>Walmart Order Details Paste</h2></div>
+        <textarea value={props.orderText} onChange={(event) => props.setOrderText(event.target.value)} />
+      </div>
+      <div className="paste-card">
+        <div className="card-heading"><h2>Walmart Transactions Paste</h2></div>
+        <textarea value={props.transactionText} onChange={(event) => props.setTransactionText(event.target.value)} />
+      </div>
+      <div className="import-actions">
+        <button className="export-button" onClick={props.parsePreview}><Search size={16} /> Parse Preview</button>
+        <button className="filter-button" onClick={props.savePreview} disabled={!props.preview || props.saving}>
+          <CheckCircle2 size={16} /> {props.saving ? "Saving..." : "Confirm and Save"}
+        </button>
+      </div>
+
+      {props.preview && (
+        <div className="preview-card">
+          <div className="card-heading"><h2>Editable Parse Preview</h2><span>Duplicate detection: PO number</span></div>
+          <div className="preview-grid">
+            {fields.map((field) => (
+              <label key={field.key}>
+                <span>{field.label}</span>
+                <input
+                  type={field.type ?? "text"}
+                  value={inputValue(props.preview?.order[field.key])}
+                  onChange={(event) => props.updatePreviewOrder(field.key, event.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="transaction-preview">
+            <h3>Transactions</h3>
+            {props.preview.transactions.map((transaction, index) => (
+              <div key={`${transaction.transaction_type}-${index}`}>
+                <span>{transaction.transaction_type}</span>
+                <strong>{currency(transaction.net_payable)}</strong>
+                <em>{transaction.status || "Parsed"}</em>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function OrdersView({ orders, inventory }: { orders: OrderView[]; inventory: InventoryItem[] }) {
+  return (
+    <div className="page-stack">
+      <OrdersTable orders={orders} inventory={inventory} />
+      {orders[0] && (
+        <section className="chart-card">
+          <div className="card-heading"><h2>Transparent Profit Formula</h2></div>
+          <div className="formula">
+            <strong>PO {orders[0].po_number}</strong>
+            <span>Profit = gross item sales - Walmart fees - shipping cost - COGS</span>
+            <p>
+              {currency(orderProfit(orders[0], inventory))} = {currency(orderGross(orders[0]))} - {currency(orderFees(orders[0]))} - {currency(orderShipping(orders[0]))} - {currency(orderCogs(orders[0], inventory))}
+            </p>
+            <small>Margin: {percent(orderMargin(orders[0], inventory))}</small>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function InventoryView({ inventory, updateCost }: { inventory: InventoryItem[]; updateCost: (item: InventoryItem, value: string) => void }) {
+  return (
+    <section className="table-card full">
+      <div className="card-heading"><h2>Inventory</h2><button className="tiny-button">Add Item</button></div>
+      <table>
+        <thead><tr><th>UPC</th><th>Item</th><th>SKU</th><th>On Hand</th><th>Unit Cost</th><th>Reorder</th><th>Supplier</th><th>Status</th></tr></thead>
+        <tbody>
+          {inventory.map((item) => (
+            <tr key={item.id}>
+              <td>{item.upc}</td>
+              <td>{item.product_name}</td>
+              <td>{item.sku || "-"}</td>
+              <td>{item.quantity_on_hand}</td>
+              <td><input className="cost-input" defaultValue={item.unit_cost} onBlur={(event) => updateCost(item, event.target.value)} /></td>
+              <td>{item.reorder_point}</td>
+              <td>{item.supplier || "-"}</td>
+              <td><span className={statusClass(item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock")}>{item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock"}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView[]; inventory: InventoryItem[]; itemSales: ReturnType<typeof salesByItem>; fees: ReturnType<typeof feeBreakdown> }) {
+  const lowStock = inventory.filter((item) => item.quantity_on_hand <= item.reorder_point);
+  const inventoryValue = inventory.reduce((sum, item) => sum + item.quantity_on_hand * item.unit_cost, 0);
+  return (
+    <div className="reports-grid">
+      <ReportCard title="Profit by Date Range" value={currency(orders.reduce((sum, order) => sum + orderProfit(order, inventory), 0))} detail="May 1 - May 15, 2026" />
+      <ReportCard title="Inventory Value" value={currency(inventoryValue)} detail="On-hand quantity times unit cost" />
+      <ReportCard title="Items Missing Cost" value={String(inventory.filter((item) => item.needs_cost || !item.unit_cost).length)} detail="Update costs to refresh profit" />
+      <ReportCard title="Low Stock" value={String(lowStock.length)} detail="At or below reorder point" />
+      <section className="chart-card wide">
+        <div className="card-heading"><h2>Sales by Item</h2><button className="tiny-button">Export CSV</button></div>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={itemSales.slice(0, 8)}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
+            <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(value) => currency(Number(value))} />
+            <Bar dataKey="sales" fill="#7067ff" radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+      <section className="chart-card">
+        <div className="card-heading"><h2>Fees by Order</h2></div>
+        {fees.map((fee) => <div className="report-line" key={fee.name}><span>{fee.name}</span><strong>{currency(fee.value)}</strong></div>)}
+      </section>
+    </div>
+  );
+}
+
+function SettingsView({ configured }: { configured: boolean }) {
+  return (
+    <section className="settings-card">
+      <div className="card-heading"><h2>Supabase Settings</h2></div>
+      <div className="setting-row"><span>NEXT_PUBLIC_SUPABASE_URL</span><strong>{configured ? "Configured" : "Missing"}</strong></div>
+      <div className="setting-row"><span>NEXT_PUBLIC_SUPABASE_ANON_KEY</span><strong>{configured ? "Configured" : "Missing"}</strong></div>
+      <p>Run `supabase/schema.sql`, optionally run `supabase/seed.sql`, then add these values to `.env.local` and restart the dev server.</p>
+    </section>
+  );
+}
+
+function OrdersTable({ orders, inventory, compact = false }: { orders: OrderView[]; inventory: InventoryItem[]; compact?: boolean }) {
+  return (
+    <section className={clsx("table-card", compact && "wide")}>
+      <div className="card-heading"><h2>Recent Orders</h2><button className="tiny-button">View All</button></div>
+      <table>
+        <thead><tr><th>PO #</th><th>Order #</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Fees</th><th>Profit</th><th>Status</th></tr></thead>
+        <tbody>
+          {orders.map((order) => (
+            <tr key={order.id}>
+              <td>{order.po_number}</td>
+              <td>{order.walmart_order_number}</td>
+              <td>{order.order_date}</td>
+              <td>{order.customer_name}</td>
+              <td>{order.items.length}</td>
+              <td>{currency(order.customer_total)}</td>
+              <td>{currency(orderFees(order))}</td>
+              <td>{currency(orderProfit(order, inventory))}</td>
+              <td><span className={statusClass(order.status)}>{order.status || "Parsed"}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function InventorySnapshot({ inventory }: { inventory: InventoryItem[] }) {
+  return (
+    <section className="table-card">
+      <div className="card-heading"><h2>Inventory Snapshot</h2><button className="tiny-button">View All</button></div>
+      <table>
+        <thead><tr><th>UPC</th><th>Item</th><th>On Hand</th><th>Unit Cost</th><th>Status</th></tr></thead>
+        <tbody>
+          {inventory.map((item) => {
+            const status = item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= 0 ? "Out of Stock" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock";
+            return (
+              <tr key={item.id}>
+                <td>{item.upc}</td>
+                <td>{item.product_name}</td>
+                <td>{item.quantity_on_hand}</td>
+                <td>{item.unit_cost ? currency(item.unit_cost) : "-"}</td>
+                <td><span className={statusClass(status)}>{status}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function ProfitSummary({ metrics }: { metrics: ReturnType<typeof dashboardMetrics> }) {
+  return (
+    <section className="chart-card">
+      <div className="card-heading"><h2>Profit Summary</h2></div>
+      <div className="report-line"><span>Gross Revenue</span><strong>{currency(metrics.grossRevenue)}</strong></div>
+      <div className="report-line"><span>Total Fees</span><strong>-{currency(metrics.walmartFees)}</strong></div>
+      <div className="report-line"><span>Shipping Costs</span><strong>-{currency(metrics.shippingCosts)}</strong></div>
+      <div className="report-line"><span>COGS</span><strong>-{currency(metrics.totalCogs)}</strong></div>
+      <div className="report-total"><span>Net Profit</span><strong>{currency(metrics.netProfit)}</strong></div>
+      <div className="report-line"><span>Profit Margin</span><strong>{percent(metrics.grossRevenue ? (metrics.netProfit / metrics.grossRevenue) * 100 : 0)}</strong></div>
+    </section>
+  );
+}
+
+function TopItems({ itemSales }: { itemSales: ReturnType<typeof salesByItem> }) {
+  return (
+    <section className="table-card">
+      <div className="card-heading"><h2>Top Items by Profit</h2><button className="tiny-button">View All</button></div>
+      <table>
+        <thead><tr><th>Item</th><th>Units</th><th>Profit</th><th>Margin</th></tr></thead>
+        <tbody>
+          {itemSales.slice(0, 5).map((item) => (
+            <tr key={item.name}><td>{item.name}</td><td>{item.units}</td><td>{currency(item.profit)}</td><td>{percent(item.sales ? (item.profit / item.sales) * 100 : 0)}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function NeedsCostTable({ items }: { items: InventoryItem[] }) {
+  return (
+    <section className="table-card">
+      <div className="card-heading"><h2>Items Needing Cost</h2><button className="tiny-button">View All</button></div>
+      <table>
+        <thead><tr><th>UPC</th><th>Item</th><th>On Hand</th><th>Status</th></tr></thead>
+        <tbody>
+          {items.slice(0, 5).map((item) => (
+            <tr key={item.id}><td>{item.upc}</td><td>{item.product_name}</td><td>{item.quantity_on_hand}</td><td><span className="badge warning">Needs Cost</span></td></tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function ReportCard({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return (
+    <section className="report-card">
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </section>
   );
 }

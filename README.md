@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Cherolee Walmart Marketplace profit dashboard built with Next.js and Supabase.
 
-## Getting Started
+## Supabase setup
 
-First, run the development server:
+1. Create a Supabase project.
+2. Run `supabase/schema.sql` in the Supabase SQL editor.
+3. Optionally run `supabase/seed.sql` to load the sample Walmart order.
+4. Copy `.env.example` to `.env.local` and add:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+If these values are missing, the app runs in Demo Mode with preview data only. The parser, save path, upsert logic, inventory deduction, and reporting code remain wired for Supabase.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm install
+npm run dev
+```
 
-## Learn More
+The app includes:
 
-To learn more about Next.js, take a look at the following resources:
+- Paste import parsing for Walmart order details and transaction details.
+- Editable parse preview before save.
+- Supabase upsert by PO number and UPC.
+- Auto-created inventory items marked `Needs Cost`.
+- Inventory quantity deduction with duplicate-update adjustment.
+- Editable item costs that recalculate dashboard profit and reports.
+- SQL schema and seed data in `supabase/`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Verification
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run lint
+npm run build
+```
