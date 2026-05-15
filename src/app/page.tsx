@@ -12,6 +12,7 @@ import {
   ClipboardPaste,
   Database,
   Download,
+  Edit3,
   Home as HomeIcon,
   Menu,
   PackagePlus,
@@ -20,6 +21,7 @@ import {
   Search,
   Settings,
   ShoppingBag,
+  Trash2,
   Truck,
   Users,
   WalletCards,
@@ -56,7 +58,15 @@ import {
 } from "@/lib/calculations";
 import { demoInventory, demoOrders, sampleOrderPaste, sampleTransactionPaste } from "@/lib/demo-data";
 import { parseWalmartImport } from "@/lib/parser";
-import { isSupabaseConfigured, loadDashboardData, saveParsedImport, updateInventoryItem } from "@/lib/supabase";
+import {
+  deleteOrderRecord,
+  isSupabaseConfigured,
+  loadDashboardData,
+  saveParsedImport,
+  updateInventoryItem,
+  updateOrderRecord,
+  type OrderEditInput,
+} from "@/lib/supabase";
 import type { InventoryItem, OrderView, ParsedImport, ParsedOrder } from "@/lib/types";
 
 const views = [
@@ -200,6 +210,60 @@ export default function Home() {
     await refresh();
   };
 
+  const editOrder = async (order: OrderView, input: OrderEditInput) => {
+    if (!configured) {
+      setOrders((current) =>
+        current.map((candidate) =>
+          candidate.id === order.id
+            ? {
+                ...candidate,
+                po_number: input.po_number,
+                walmart_order_number: input.walmart_order_number,
+                order_date: input.order_date,
+                customer_name: input.customer_name,
+                status: input.status,
+                subtotal: input.subtotal,
+                taxes: input.taxes,
+                customer_total: input.customer_total,
+                items: [
+                  {
+                    ...candidate.items[0],
+                    upc: input.upc,
+                    product_name: input.product_name,
+                    walmart_item_id: input.walmart_item_id,
+                    quantity: input.quantity,
+                    unit_price: input.unit_price,
+                    subtotal: input.subtotal,
+                  },
+                ],
+                fees: input.walmart_fee
+                  ? [{ ...candidate.fees[0], amount: Math.abs(input.walmart_fee), fee_type: "Walmart Service Fee" }]
+                  : [],
+                shipments: [{ ...candidate.shipments[0], shipping_cost: input.shipping_cost, shipping_status: input.status }],
+              }
+            : candidate,
+        ),
+      );
+      setMessage("Demo Mode order updated locally for preview. Supabase is required for persistence.");
+      return;
+    }
+    await updateOrderRecord(order, input);
+    await refresh();
+    setMessage(`Updated PO ${input.po_number}.`);
+  };
+
+  const deleteOrder = async (order: OrderView) => {
+    if (!window.confirm(`Delete PO ${order.po_number}? This will restore the sold quantity to inventory.`)) return;
+    if (!configured) {
+      setOrders((current) => current.filter((candidate) => candidate.id !== order.id));
+      setMessage("Demo Mode order deleted locally for preview. Supabase is required for persistence.");
+      return;
+    }
+    await deleteOrderRecord(order);
+    await refresh();
+    setMessage(`Deleted PO ${order.po_number} and restored inventory quantity.`);
+  };
+
   const mainTitle = views.find((view) => view.id === activeView)?.label ?? "Dashboard";
 
   return (
@@ -302,7 +366,9 @@ export default function Home() {
           />
         )}
 
-        {activeView === "orders" && <OrdersView orders={orders} inventory={inventory} />}
+        {activeView === "orders" && (
+          <OrdersView orders={orders} inventory={inventory} onEditOrder={editOrder} onDeleteOrder={deleteOrder} />
+        )}
         {activeView === "inventory" && <InventoryView inventory={inventory} updateCost={updateCost} />}
         {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
         {activeView === "settings" && <SettingsView configured={configured} />}
@@ -480,10 +546,130 @@ function ImportView(props: {
   );
 }
 
-function OrdersView({ orders, inventory }: { orders: OrderView[]; inventory: InventoryItem[] }) {
+function orderToEditInput(order: OrderView): OrderEditInput {
+  const item = order.items[0];
+  return {
+    po_number: order.po_number,
+    walmart_order_number: order.walmart_order_number || "",
+    order_date: order.order_date || "",
+    customer_name: order.customer_name || "",
+    status: order.status || "Parsed",
+    product_name: item?.product_name || "",
+    upc: item?.upc || "",
+    walmart_item_id: item?.walmart_item_id || "",
+    quantity: item?.quantity || 1,
+    unit_price: item?.unit_price || 0,
+    subtotal: item?.subtotal || order.subtotal || 0,
+    taxes: order.taxes || 0,
+    customer_total: order.customer_total || 0,
+    shipping_cost: orderShipping(order),
+    walmart_fee: orderFees(order),
+  };
+}
+
+function OrdersView({
+  orders,
+  inventory,
+  onEditOrder,
+  onDeleteOrder,
+}: {
+  orders: OrderView[];
+  inventory: InventoryItem[];
+  onEditOrder: (order: OrderView, input: OrderEditInput) => Promise<void>;
+  onDeleteOrder: (order: OrderView) => Promise<void>;
+}) {
+  const [editingOrder, setEditingOrder] = useState<OrderView | null>(null);
+  const [draft, setDraft] = useState<OrderEditInput | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const startEdit = (order: OrderView) => {
+    setEditingOrder(order);
+    setDraft(orderToEditInput(order));
+  };
+
+  const updateDraft = (key: keyof OrderEditInput, value: string) => {
+    if (!draft) return;
+    const numeric = new Set(["quantity", "unit_price", "subtotal", "taxes", "customer_total", "shipping_cost", "walmart_fee"]);
+    const nextDraft = {
+      ...draft,
+      [key]: numeric.has(key) ? Number(value) : value,
+    };
+    if (key === "quantity" || key === "unit_price") {
+      nextDraft.subtotal = Number((Number(nextDraft.quantity || 0) * Number(nextDraft.unit_price || 0)).toFixed(2));
+      nextDraft.customer_total = Number((nextDraft.subtotal + Number(nextDraft.taxes || 0)).toFixed(2));
+    }
+    if (key === "subtotal" || key === "taxes") {
+      nextDraft.customer_total = Number((Number(nextDraft.subtotal || 0) + Number(nextDraft.taxes || 0)).toFixed(2));
+    }
+    setDraft(nextDraft);
+  };
+
+  const saveEdit = async () => {
+    if (!editingOrder || !draft) return;
+    setSavingEdit(true);
+    try {
+      await onEditOrder(editingOrder, draft);
+      setEditingOrder(null);
+      setDraft(null);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Order update failed.");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   return (
     <div className="page-stack">
-      <OrdersTable orders={orders} inventory={inventory} />
+      <OrdersTable orders={orders} inventory={inventory} onEdit={startEdit} onDelete={onDeleteOrder} />
+      {editingOrder && draft && (
+        <section className="preview-card">
+          <div className="card-heading">
+            <h2>Edit PO {editingOrder.po_number}</h2>
+            <button className="tiny-button" onClick={() => setEditingOrder(null)}>Close</button>
+          </div>
+          <div className="preview-grid">
+            {[
+              ["po_number", "PO number"],
+              ["walmart_order_number", "Walmart order"],
+              ["order_date", "Order date", "date"],
+              ["customer_name", "Customer"],
+              ["status", "Status"],
+              ["product_name", "Product title"],
+              ["upc", "UPC"],
+              ["walmart_item_id", "Item ID"],
+              ["quantity", "Quantity", "number"],
+              ["unit_price", "Unit price", "number"],
+              ["subtotal", "Subtotal", "number"],
+              ["taxes", "Taxes", "number"],
+              ["customer_total", "Customer total", "number"],
+              ["walmart_fee", "Walmart fee", "number"],
+              ["shipping_cost", "Shipping cost", "number"],
+            ].map(([key, label, type]) => (
+              <label key={key}>
+                <span>{label}</span>
+                <input
+                  type={type || "text"}
+                  value={inputValue(draft[key as keyof OrderEditInput])}
+                  onChange={(event) => updateDraft(key as keyof OrderEditInput, event.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="edit-actions">
+            <button className="export-button" onClick={saveEdit} disabled={savingEdit}>
+              <CheckCircle2 size={16} /> {savingEdit ? "Saving..." : "Save Changes"}
+            </button>
+            <button
+              className="danger-button"
+              onClick={() => void onDeleteOrder(editingOrder).then(() => setEditingOrder(null)).catch((error) => {
+                window.alert(error instanceof Error ? error.message : "Order delete failed.");
+              })}
+            >
+              <Trash2 size={16} /> Delete Order
+            </button>
+          </div>
+        </section>
+      )}
       {orders[0] && (
         <section className="chart-card">
           <div className="card-heading"><h2>Transparent Profit Formula</h2></div>
@@ -566,12 +752,24 @@ function SettingsView({ configured }: { configured: boolean }) {
   );
 }
 
-function OrdersTable({ orders, inventory, compact = false }: { orders: OrderView[]; inventory: InventoryItem[]; compact?: boolean }) {
+function OrdersTable({
+  orders,
+  inventory,
+  compact = false,
+  onEdit,
+  onDelete,
+}: {
+  orders: OrderView[];
+  inventory: InventoryItem[];
+  compact?: boolean;
+  onEdit?: (order: OrderView) => void;
+  onDelete?: (order: OrderView) => Promise<void>;
+}) {
   return (
     <section className={clsx("table-card", compact && "wide")}>
       <div className="card-heading"><h2>Recent Orders</h2><button className="tiny-button">View All</button></div>
       <table>
-        <thead><tr><th>PO #</th><th>Order #</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Fees</th><th>Profit</th><th>Status</th></tr></thead>
+        <thead><tr><th>PO #</th><th>Order #</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Fees</th><th>Profit</th><th>Status</th>{(onEdit || onDelete) && <th>Actions</th>}</tr></thead>
         <tbody>
           {orders.map((order) => (
             <tr key={order.id}>
@@ -584,6 +782,24 @@ function OrdersTable({ orders, inventory, compact = false }: { orders: OrderView
               <td>{currency(orderFees(order))}</td>
               <td>{currency(orderProfit(order, inventory))}</td>
               <td><span className={statusClass(order.status)}>{order.status || "Parsed"}</span></td>
+              {(onEdit || onDelete) && (
+                <td>
+                  <div className="row-actions">
+                    {onEdit && <button className="icon-button" onClick={() => onEdit(order)} title="Edit order"><Edit3 size={14} /></button>}
+                    {onDelete && (
+                      <button
+                        className="icon-button danger"
+                        onClick={() => void onDelete(order).catch((error) => {
+                          window.alert(error instanceof Error ? error.message : "Order delete failed.");
+                        })}
+                        title="Delete order"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

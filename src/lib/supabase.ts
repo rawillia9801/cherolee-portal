@@ -249,5 +249,185 @@ export async function updateInventoryItem(id: string, patch: Partial<InventoryIt
     needs_cost: patch.unit_cost !== undefined ? !Number(patch.unit_cost) : patch.needs_cost,
   };
   const response = await supabase.from("inventory_items").update(nextPatch).eq("id", id);
-  if (response.error) throw response.error;
+  if (response.error) throw formatSupabaseError("Updating inventory item", response.error);
+}
+
+export type OrderEditInput = {
+  po_number: string;
+  walmart_order_number?: string | null;
+  order_date?: string | null;
+  customer_name?: string | null;
+  status?: string | null;
+  product_name: string;
+  upc: string;
+  walmart_item_id?: string | null;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+  taxes: number;
+  customer_total: number;
+  shipping_cost: number;
+  walmart_fee: number;
+};
+
+async function ensureInventoryItem(supabase: SupabaseClient, input: OrderEditInput) {
+  const existingResponse = await supabase.from("inventory_items").select("*").eq("upc", input.upc).maybeSingle();
+  if (existingResponse.error) throw formatSupabaseError("Checking edited order inventory", existingResponse.error);
+  const existing = existingResponse.data as InventoryItem | null;
+
+  const response = await supabase
+    .from("inventory_items")
+    .upsert(
+      {
+        upc: input.upc,
+        product_name: existing?.product_name || input.product_name || "Unlabeled Walmart item",
+        marketplace: existing?.marketplace || "Walmart",
+        walmart_item_id: input.walmart_item_id || existing?.walmart_item_id || null,
+        quantity_on_hand: existing?.quantity_on_hand ?? 0,
+        unit_cost: existing?.unit_cost ?? 0,
+        reorder_point: existing?.reorder_point ?? 0,
+        needs_cost: !Number(existing?.unit_cost),
+        sku: existing?.sku ?? null,
+        supplier: existing?.supplier ?? null,
+        notes: existing?.notes ?? null,
+      },
+      { onConflict: "upc" },
+    )
+    .select("*")
+    .single();
+
+  if (response.error) throw formatSupabaseError("Upserting edited order inventory", response.error);
+  return response.data as InventoryItem;
+}
+
+async function setInventoryQuantity(supabase: SupabaseClient, inventoryId: string, quantity: number, action: string) {
+  const response = await supabase
+    .from("inventory_items")
+    .update({ quantity_on_hand: Math.max(0, Math.round(quantity)) })
+    .eq("id", inventoryId);
+  if (response.error) throw formatSupabaseError(action, response.error);
+}
+
+export async function updateOrderRecord(order: OrderView, input: OrderEditInput) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  assertRequired(input.po_number, "PO number");
+  assertRequired(input.upc, "UPC");
+  assertRequired(input.product_name, "Product title");
+  if (!input.quantity || input.quantity < 1) throw new Error("Quantity must be at least 1 before saving.");
+
+  const oldItem = order.items[0];
+  const oldInventory = oldItem?.inventory_item_id
+    ? await supabase.from("inventory_items").select("*").eq("id", oldItem.inventory_item_id).maybeSingle()
+    : null;
+  if (oldInventory?.error) throw formatSupabaseError("Loading current inventory before edit", oldInventory.error);
+
+  const newInventory = await ensureInventoryItem(supabase, input);
+  const oldQuantity = Number(oldItem?.quantity || 0);
+  const oldUpc = oldItem?.upc || input.upc;
+  const newQuantity = Number(input.quantity || 0);
+
+  const orderResponse = await supabase
+    .from("orders")
+    .update({
+      po_number: input.po_number.trim(),
+      walmart_order_number: input.walmart_order_number || null,
+      order_date: input.order_date || null,
+      customer_name: input.customer_name || null,
+      status: input.status || "Parsed",
+      subtotal: input.subtotal,
+      taxes: input.taxes,
+      customer_total: input.customer_total,
+    })
+    .eq("id", order.id);
+  if (orderResponse.error) throw formatSupabaseError("Updating order", orderResponse.error);
+
+  const cleanupResponses = await Promise.all([
+    supabase.from("order_items").delete().eq("order_id", order.id),
+    supabase.from("order_fees").delete().eq("order_id", order.id),
+    supabase.from("shipments").delete().eq("order_id", order.id),
+  ]);
+  const cleanupError = cleanupResponses.find((response) => response.error)?.error;
+  if (cleanupError) throw formatSupabaseError("Replacing edited order detail rows", cleanupError);
+
+  const unitCost = Number(newInventory.unit_cost || 0);
+  const itemResponse = await supabase.from("order_items").insert({
+    order_id: order.id,
+    inventory_item_id: newInventory.id,
+    upc: input.upc,
+    product_name: input.product_name,
+    walmart_item_id: input.walmart_item_id || newInventory.walmart_item_id || null,
+    quantity: newQuantity,
+    unit_price: input.unit_price,
+    subtotal: input.subtotal,
+    unit_cost: unitCost,
+    total_cogs: Number((unitCost * newQuantity).toFixed(2)),
+  });
+  if (itemResponse.error) throw formatSupabaseError("Updating order item", itemResponse.error);
+
+  if (input.walmart_fee) {
+    const feeResponse = await supabase.from("order_fees").insert({
+      order_id: order.id,
+      fee_type: "Walmart Service Fee",
+      amount: Math.abs(input.walmart_fee),
+      source: "manual edit",
+      transaction_date: input.order_date || null,
+      status: "Posted",
+    });
+    if (feeResponse.error) throw formatSupabaseError("Updating order fee", feeResponse.error);
+  }
+
+  const shipmentResponse = await supabase.from("shipments").insert({
+    order_id: order.id,
+    shipping_status: input.status || null,
+    shipping_cost: input.shipping_cost,
+  });
+  if (shipmentResponse.error) throw formatSupabaseError("Updating shipment", shipmentResponse.error);
+
+  if (oldUpc === input.upc && oldInventory?.data) {
+    const nextQuantity = Number(oldInventory.data.quantity_on_hand || 0) + oldQuantity - newQuantity;
+    await setInventoryQuantity(supabase, oldInventory.data.id, nextQuantity, "Adjusting inventory for edited quantity");
+  } else {
+    if (oldInventory?.data) {
+      await setInventoryQuantity(
+        supabase,
+        oldInventory.data.id,
+        Number(oldInventory.data.quantity_on_hand || 0) + oldQuantity,
+        "Restoring old inventory item after UPC edit",
+      );
+    }
+    await setInventoryQuantity(
+      supabase,
+      newInventory.id,
+      Number(newInventory.quantity_on_hand || 0) - newQuantity,
+      "Deducting new inventory item after UPC edit",
+    );
+  }
+}
+
+export async function deleteOrderRecord(order: OrderView) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  for (const item of order.items) {
+    if (!item.inventory_item_id) continue;
+    const inventoryResponse = await supabase
+      .from("inventory_items")
+      .select("id, quantity_on_hand")
+      .eq("id", item.inventory_item_id)
+      .maybeSingle();
+    if (inventoryResponse.error) throw formatSupabaseError("Loading inventory before order delete", inventoryResponse.error);
+    if (inventoryResponse.data) {
+      await setInventoryQuantity(
+        supabase,
+        inventoryResponse.data.id,
+        Number(inventoryResponse.data.quantity_on_hand || 0) + Number(item.quantity || 0),
+        "Restoring inventory after order delete",
+      );
+    }
+  }
+
+  const deleteResponse = await supabase.from("orders").delete().eq("id", order.id);
+  if (deleteResponse.error) throw formatSupabaseError("Deleting order", deleteResponse.error);
 }

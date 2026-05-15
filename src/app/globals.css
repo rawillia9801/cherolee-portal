@@ -87,6 +87,8 @@ button {
 .quick-action,
 .filter-button,
 .export-button,
+.danger-button,
+.icon-button,
 .tiny-button {
   border: 0;
 }
@@ -265,6 +267,22 @@ button {
   color: #fff;
   background: linear-gradient(90deg, #5433d6, #6b55f6);
   border-color: transparent;
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px;
+  color: #b42318;
+  background: #fff;
+  border: 1px solid #f6b8b3;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .demo-pill {
@@ -538,12 +556,20 @@ th {
 }
 
 .import-actions,
+.edit-actions,
 .preview-card {
   grid-column: 1 / -1;
 }
 
-.import-actions {
+.import-actions,
+.edit-actions {
   gap: 10px;
+}
+
+.edit-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 16px;
 }
 
 .preview-grid {
@@ -596,6 +622,34 @@ th {
 .page-stack {
   display: grid;
   gap: 16px;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #475467;
+  background: #fff;
+  border: 1px solid #dce2ef;
+  border-radius: 6px;
+}
+
+.icon-button:hover {
+  color: #5136c9;
+  border-color: #c9c2ff;
+}
+
+.icon-button.danger:hover {
+  color: #b42318;
+  border-color: #f6b8b3;
+  background: #fff7f6;
 }
 
 .formula {
