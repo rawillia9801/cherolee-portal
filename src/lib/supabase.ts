@@ -3,6 +3,31 @@ import type { InventoryItem, OrderView, ParsedImport } from "./types";
 
 let client: SupabaseClient | null = null;
 
+type SupabaseLikeError = {
+  message?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+};
+
+function formatSupabaseError(action: string, error: unknown) {
+  const typed = error as SupabaseLikeError;
+  const parts = [
+    `${action} failed`,
+    typed.code ? `code ${typed.code}` : "",
+    typed.message,
+    typed.details ? `Details: ${typed.details}` : "",
+    typed.hint ? `Hint: ${typed.hint}` : "",
+  ].filter(Boolean);
+  return new Error(parts.join(". "));
+}
+
+function assertRequired(value: string, label: string) {
+  if (!value.trim()) {
+    throw new Error(`${label} is required before saving.`);
+  }
+}
+
 export function isSupabaseConfigured() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 }
@@ -46,6 +71,10 @@ export async function saveParsedImport(parsed: ParsedImport) {
   const { order, transactions } = parsed;
   const poNumber = order.po_number.trim();
   const upc = order.upc.trim();
+  assertRequired(poNumber, "PO number");
+  assertRequired(upc, "UPC");
+  if (!order.quantity || order.quantity < 1) throw new Error("Quantity must be at least 1 before saving.");
+  if (!order.product_name.trim()) throw new Error("Product title is required before saving.");
 
   const existingOrderResponse = await supabase
     .from("orders")
@@ -53,24 +82,34 @@ export async function saveParsedImport(parsed: ParsedImport) {
     .eq("po_number", poNumber)
     .maybeSingle();
 
-  if (existingOrderResponse.error) throw existingOrderResponse.error;
+  if (existingOrderResponse.error) throw formatSupabaseError("Checking duplicate order", existingOrderResponse.error);
   const wasExistingOrder = Boolean(existingOrderResponse.data?.id);
   const previousQuantity =
     existingOrderResponse.data?.order_items?.find((item: { upc?: string | null; quantity?: number }) => item.upc === upc)
       ?.quantity ?? 0;
 
   const existingInventoryResponse = await supabase.from("inventory_items").select("*").eq("upc", upc).maybeSingle();
-  if (existingInventoryResponse.error) throw existingInventoryResponse.error;
+  if (existingInventoryResponse.error) throw formatSupabaseError("Checking inventory item", existingInventoryResponse.error);
+  const existingInventory = existingInventoryResponse.data as InventoryItem | null;
 
   const inventoryPayload = {
     upc,
-    product_name: order.product_name,
-    marketplace: "Walmart",
-    walmart_item_id: order.walmart_item_id || transactions.find((transaction) => transaction.item_id)?.item_id || null,
-    needs_cost: !Number(existingInventoryResponse.data?.unit_cost),
-    quantity_on_hand: existingInventoryResponse.data?.quantity_on_hand ?? 0,
-    unit_cost: existingInventoryResponse.data?.unit_cost ?? 0,
-    reorder_point: existingInventoryResponse.data?.reorder_point ?? 0,
+    product_name: order.product_name === "Unlabeled Walmart item" && existingInventory?.product_name
+      ? existingInventory.product_name
+      : order.product_name,
+    marketplace: existingInventory?.marketplace || "Walmart",
+    walmart_item_id:
+      order.walmart_item_id ||
+      transactions.find((transaction) => transaction.item_id)?.item_id ||
+      existingInventory?.walmart_item_id ||
+      null,
+    needs_cost: !Number(existingInventory?.unit_cost),
+    quantity_on_hand: existingInventory?.quantity_on_hand ?? 0,
+    unit_cost: existingInventory?.unit_cost ?? 0,
+    reorder_point: existingInventory?.reorder_point ?? 0,
+    sku: existingInventory?.sku ?? null,
+    supplier: existingInventory?.supplier ?? null,
+    notes: existingInventory?.notes ?? null,
   };
 
   const inventoryResponse = await supabase
@@ -79,7 +118,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
     .select("*")
     .single();
 
-  if (inventoryResponse.error) throw inventoryResponse.error;
+  if (inventoryResponse.error) throw formatSupabaseError("Upserting inventory item", inventoryResponse.error);
   const inventoryItem = inventoryResponse.data as InventoryItem;
 
   const orderResponse = await supabase
@@ -105,15 +144,17 @@ export async function saveParsedImport(parsed: ParsedImport) {
     .select("*")
     .single();
 
-  if (orderResponse.error) throw orderResponse.error;
+  if (orderResponse.error) throw formatSupabaseError("Upserting order", orderResponse.error);
   const savedOrder = orderResponse.data;
 
-  await Promise.all([
+  const cleanupResponses = await Promise.all([
     supabase.from("order_items").delete().eq("order_id", savedOrder.id),
     supabase.from("order_fees").delete().eq("order_id", savedOrder.id),
     supabase.from("shipments").delete().eq("order_id", savedOrder.id),
     supabase.from("transactions").delete().eq("order_id", savedOrder.id),
   ]);
+  const cleanupError = cleanupResponses.find((response) => response.error)?.error;
+  if (cleanupError) throw formatSupabaseError("Replacing existing order detail rows", cleanupError);
 
   const unitCost = Number(inventoryItem.unit_cost || 0);
   const itemInsert = await supabase.from("order_items").insert({
@@ -129,7 +170,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
     total_cogs: Number((unitCost * order.quantity).toFixed(2)),
   });
 
-  if (itemInsert.error) throw itemInsert.error;
+  if (itemInsert.error) throw formatSupabaseError("Inserting order item", itemInsert.error);
 
   const feeRows = transactions
     .filter((transaction) => /fee|service|referral|processing/i.test(transaction.transaction_type))
@@ -144,7 +185,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
 
   if (feeRows.length) {
     const feeInsert = await supabase.from("order_fees").insert(feeRows);
-    if (feeInsert.error) throw feeInsert.error;
+    if (feeInsert.error) throw formatSupabaseError("Inserting order fees", feeInsert.error);
   }
 
   const shipmentInsert = await supabase.from("shipments").insert({
@@ -157,7 +198,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
     estimated_delivery: order.estimated_delivery || null,
     label_format: null,
   });
-  if (shipmentInsert.error) throw shipmentInsert.error;
+  if (shipmentInsert.error) throw formatSupabaseError("Inserting shipment", shipmentInsert.error);
 
   if (transactions.length) {
     const txInsert = await supabase.from("transactions").insert(
@@ -173,7 +214,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
         raw_text: transaction.raw_text,
       })),
     );
-    if (txInsert.error) throw txInsert.error;
+    if (txInsert.error) throw formatSupabaseError("Inserting transactions", txInsert.error);
   }
 
   const importInsert = await supabase.from("imports").insert([
@@ -183,7 +224,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
       parsed_json: parsed,
     },
   ]);
-  if (importInsert.error) throw importInsert.error;
+  if (importInsert.error) throw formatSupabaseError("Recording import log", importInsert.error);
 
   const quantityDelta = order.quantity - previousQuantity;
   if (!wasExistingOrder || quantityDelta !== 0) {
@@ -194,7 +235,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
         needs_cost: !Number(inventoryItem.unit_cost),
       })
       .eq("id", inventoryItem.id);
-    if (quantityUpdate.error) throw quantityUpdate.error;
+    if (quantityUpdate.error) throw formatSupabaseError("Deducting inventory quantity", quantityUpdate.error);
   }
 
   return savedOrder.id as string;

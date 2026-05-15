@@ -10,16 +10,24 @@ function compact(text: string) {
   return cleanText(text).replace(/\n+/g, "\n");
 }
 
+function textLines(text: string) {
+  return compact(text).split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 function matchValue(text: string, labels: string[], fallback = "") {
   for (const label of labels) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regexes = [
-      new RegExp(`${escaped}\\s*[:#]?\\s*([^\\n]+)`, "i"),
-      new RegExp(`${escaped}\\s*\\n\\s*([^\\n]+)`, "i"),
-    ];
-    for (const regex of regexes) {
-      const found = text.match(regex)?.[1]?.trim();
-      if (found) return found.replace(/^\W+/, "").trim();
+    const sameLine = text.match(new RegExp(`${escaped}\\s*[:#]\\s*([^\\n]+)`, "i"))?.[1]?.trim();
+    if (sameLine) return sameLine.replace(/^\W+/, "").trim();
+
+    const lines = textLines(text);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (new RegExp(`^${escaped}\\s*[:#]?\\s*$`, "i").test(line)) {
+        return lines[index + 1]?.replace(/^\W+/, "").trim() ?? fallback;
+      }
+      const inline = line.match(new RegExp(`^${escaped}\\s+(.+)$`, "i"))?.[1]?.trim();
+      if (inline) return inline.replace(/^\W+/, "").trim();
     }
   }
   return fallback;
@@ -69,6 +77,43 @@ function findFirst(text: string, regex: RegExp, fallback = "") {
   return text.match(regex)?.[1]?.trim() ?? fallback;
 }
 
+function allMoneyValues(text: string) {
+  return [...text.matchAll(new RegExp(moneyPattern, "g"))]
+    .map((match) => toNumber(match[0]))
+    .filter((value) => value !== 0);
+}
+
+function firstNumberAfter(text: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = text.match(new RegExp(`${escaped}\\D+(\\d+)`, "i"))?.[1];
+  return found ? Number.parseInt(found, 10) : 0;
+}
+
+function inferOrderAmounts(text: string, quantity: number) {
+  const money = allMoneyValues(text).map((value) => Math.abs(value));
+  const customerTotal = matchMoney(text, ["Order total", "Customer total", "Total"]);
+  const taxes = matchMoney(text, ["Taxes and other fees", "Taxes", "Tax"]);
+  const subtotal = matchMoney(text, ["Subtotal", "Item subtotal", "Product subtotal"]);
+  const unitPrice = matchMoney(text, ["Sale price", "Unit price", "Price"]);
+
+  const inferredTotal = customerTotal || money.at(-1) || 0;
+  const inferredTax = taxes || (money.length >= 2 ? money.find((value) => value < 10 && value !== unitPrice) ?? 0 : 0);
+  const inferredSubtotal =
+    subtotal ||
+    money.find((value) => quantity > 1 && Math.abs(value / quantity - 7.99) < 0.01) ||
+    (inferredTotal && inferredTax ? Number((inferredTotal - inferredTax).toFixed(2)) : 0);
+  const inferredUnitPrice =
+    unitPrice ||
+    (quantity > 0 && inferredSubtotal ? Number((inferredSubtotal / quantity).toFixed(2)) : 0);
+
+  return {
+    subtotal: Number(inferredSubtotal.toFixed(2)),
+    unitPrice: Number(inferredUnitPrice.toFixed(2)),
+    taxes: Number(inferredTax.toFixed(2)),
+    customerTotal: Number(inferredTotal.toFixed(2)),
+  };
+}
+
 function parseOrderDetails(orderText: string): ParsedOrder {
   const text = compact(orderText);
   const po =
@@ -78,11 +123,11 @@ function parseOrderDetails(orderText: string): ParsedOrder {
     matchValue(text, ["Walmart order number", "Order number", "Order #"]) ||
     findFirst(text, /\b(2\d{14})\b/);
   const upc = matchValue(text, ["UPC", "GTIN"]) || findFirst(text, /\b(\d{12,14})\b/);
-  const quantity = Math.max(1, Math.round(matchNumber(text, ["Quantity sold", "Quantity", "Qty"], 1)));
-  const subtotal = matchMoney(text, ["Subtotal", "Item subtotal", "Product subtotal"]);
-  const unitPrice =
-    matchMoney(text, ["Sale price", "Unit price", "Price"]) ||
-    (quantity > 0 && subtotal ? subtotal / quantity : 0);
+  const quantity = Math.max(
+    1,
+    Math.round(matchNumber(text, ["Quantity sold", "Quantity", "Qty"], firstNumberAfter(text, "Qty") || 1)),
+  );
+  const inferred = inferOrderAmounts(text, quantity);
   const title =
     matchValue(text, ["Product title", "Item title", "Product name", "Item"]) ||
     "Unlabeled Walmart item";
@@ -95,8 +140,8 @@ function parseOrderDetails(orderText: string): ParsedOrder {
     item_condition: matchValue(text, ["Item condition", "Condition"]),
     walmart_item_id: matchValue(text, ["Item ID", "Walmart item ID", "Marketplace item ID"]),
     quantity,
-    unit_price: Number(unitPrice.toFixed(2)),
-    subtotal: Number((subtotal || unitPrice * quantity).toFixed(2)),
+    unit_price: inferred.unitPrice,
+    subtotal: inferred.subtotal,
     carrier: matchValue(text, ["Carrier"]),
     tracking_number: matchValue(text, ["Tracking number", "Tracking #"]),
     shipping_status: matchValue(text, ["Shipping status", "Shipment status", "Status"]),
@@ -107,23 +152,48 @@ function parseOrderDetails(orderText: string): ParsedOrder {
     deliver_by: normalizeDate(matchValue(text, ["Deliver-by date", "Deliver by", "Deliver-by"])),
     customer_name: matchValue(text, ["Customer name", "Customer"]),
     shipping_fee_charged: matchMoney(text, ["Shipping fee charged to customer", "Shipping fee", "Shipping"]),
-    taxes: matchMoney(text, ["Taxes and other fees", "Taxes", "Tax"]),
-    customer_total: matchMoney(text, ["Order total", "Customer total", "Total"]),
+    taxes: inferred.taxes,
+    customer_total: inferred.customerTotal,
     amount_adjusted: matchMoney(text, ["Amount adjusted", "Adjustment"], 0),
     status: matchValue(text, ["Shipping status", "Order status", "Status"], "Parsed"),
   };
 }
 
+function normalizeTransactionRows(transactionText: string) {
+  const lines = textLines(transactionText);
+  const rows: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    if (/\b1\d{14}\b/.test(line) && current) {
+      rows.push(current.trim());
+      current = line;
+      continue;
+    }
+    current = current ? `${current} ${line}` : line;
+    if (/\b(Pending|Paid|Posted|Complete|Completed)\b/i.test(line) && current) {
+      rows.push(current.trim());
+      current = "";
+    }
+  }
+  if (current) rows.push(current.trim());
+  return rows.length ? rows : lines;
+}
+
 function parseTransactionLine(line: string, fallbackPo: string): ParsedTransaction | null {
   if (!/(sale|fee|service|payable|transaction)/i.test(line)) return null;
   const po = findFirst(line, /\b(1\d{14})\b/, fallbackPo);
-  const itemId = findFirst(line, /\b(?:item id|item)\s*[:#]?\s*(\d{6,})\b/i);
+  const itemId =
+    findFirst(line, /\b(?:item id|item)\s*[:#]?\s*(\d{6,})\b/i) ||
+    findFirst(line, /\b(?:Sale|Walmart Service Fee|Referral Fee|Payment Processing)\s+(\d{6,})\b/i);
   const type =
     findFirst(line, /\b(Walmart Service Fee|Referral Fee|Payment Processing|Sale|Refund|Adjustment)\b/i) ||
     "Transaction";
   const moneyMatches = [...line.matchAll(new RegExp(moneyPattern, "g"))].map((match) => match[0]);
   const netPayable = moneyMatches.length ? toNumber(moneyMatches[moneyMatches.length - 1]) : 0;
-  const quantity = Number.parseInt(findFirst(line, /\b(?:qty|quantity)\s*[:#]?\s*(\d+)/i, "1"), 10);
+  const quantity =
+    Number.parseInt(findFirst(line, /\b(?:qty|quantity)\s*[:#]?\s*(\d+)/i), 10) ||
+    Number.parseInt(findFirst(line, /\b(?:Sale|Walmart Service Fee|Referral Fee|Payment Processing)\s+\d{6,}\s+(\d+)\b/i, "1"), 10);
   const date = normalizeDate(findFirst(line, /(\d{1,2}\/\d{1,2}\/\d{2,4}|[A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})/));
 
   return {
@@ -132,7 +202,9 @@ function parseTransactionLine(line: string, fallbackPo: string): ParsedTransacti
     transaction_type: type,
     item_id: itemId,
     quantity: Number.isNaN(quantity) ? 1 : quantity,
-    net_payable: Number(netPayable.toFixed(2)),
+    net_payable: /fee|service|referral|processing/i.test(type)
+      ? -Math.abs(Number(netPayable.toFixed(2)))
+      : Number(netPayable.toFixed(2)),
     status: findFirst(line, /\b(Pending|Paid|Posted|Complete|Completed)\b/i),
     raw_text: line,
   };
@@ -141,7 +213,7 @@ function parseTransactionLine(line: string, fallbackPo: string): ParsedTransacti
 function parseTransactions(transactionText: string, fallbackPo: string): ParsedTransaction[] {
   const text = compact(transactionText);
   if (!text) return [];
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = normalizeTransactionRows(text);
   const parsed = lines.map((line) => parseTransactionLine(line, fallbackPo)).filter(Boolean) as ParsedTransaction[];
 
   if (parsed.length) return parsed;
