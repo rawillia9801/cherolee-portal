@@ -143,28 +143,63 @@ export const demoOrders: OrderView[] = [
   order("ord-5", "119113694554433", "200014532665544", "Travel Size Repellent", "845678901234", 1, 18.99, "D Davis", 18.99, 2.87, 3.86, 0, "2026-05-13"),
 ];
 
-export const sampleOrderPaste = `PO number 119113696422784
-Walmart order number 200014533145443
-Product title Skeeter Hawk Repellent
-UPC 645397938446
-Item condition New
-Sale price $7.99
-Quantity sold 6
-Carrier USPS
-Tracking number 9400111100000000000000
-Shipping status Shipped
-Estimated delivery May 18, 2026
-Estimated shipping cost $6.54
-Order date May 15, 2026
-Ship-by date May 16, 2026
-Deliver-by date May 20, 2026
-Customer name Z Smith
-Subtotal $47.94
-Shipping fee charged to customer $0.00
-Taxes and other fees $3.24
-Order total $51.18
-Amount adjusted $0.00`;
+export const sampleOrderPaste = `Shipped
+Skeeter Hawk Replacement Repellent for the Mosquito Wristband and Carabiner, 2 Pack, Blue
+Variant: 1
+645397938446
+Condition: New
+$7.99
 
-export const sampleTransactionPaste = `PO number 119113696422784
-Transaction date May 15, 2026 Transaction type Sale Item ID 87610234 Quantity 6 Net payable $47.94 Status Posted
-Transaction date May 15, 2026 Transaction type Walmart Service Fee Item ID 87610234 Quantity 6 Net payable -$6.54 Status Posted`;
+x2
+Shipping details
+ZPL text format
+Carrier / Tracking
+USPS9400136207565359624568
+Shipping status
+Shipped
+Est. delivery
+Fri, May 22 - USPS Ground Advantage
+Est. cost
+$6.07
+Shipping label
+print-format
+Default label - 4 x 6 in PDF
+Change format
+Print Label
+Order details
+Order#:
+200014663509505
+Ship node:
+Cherolee LLC - 10001327162 - MP
+Ship node ID:
+10001327162
+Ship method:
+Standard
+Carrier method:
+USPS_GROUND
+Ordered:
+05/14/2026
+Ship by:
+05/15/2026
+Deliver by:
+05/21/2026
+Fulfilled by:
+Seller
+Customer details
+Christopher Marrs
+3197 Perlett Dr
+Cameron Park, CA 95682
+(530) 503-7060*
+Subtotal (1 item)
+$15.98
+Shipping fee:
+$0.00
+Taxes and other fees:
+$1.16
+Total:
+$17.14
+Amount Adjusted:
+$0.00
+View payment details`;
+
+export const sampleTransactionPaste = "";

@@ -505,7 +505,7 @@ function ImportView(props: {
         <textarea value={props.orderText} onChange={(event) => props.setOrderText(event.target.value)} />
       </div>
       <div className="paste-card">
-        <div className="card-heading"><h2>Walmart Transactions Paste</h2></div>
+        <div className="card-heading"><h2>Walmart Transactions Paste</h2><span>Optional. Fee auto-calculates at 15%.</span></div>
         <textarea value={props.transactionText} onChange={(event) => props.setTransactionText(event.target.value)} />
       </div>
       <div className="import-actions">
