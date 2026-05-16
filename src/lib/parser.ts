@@ -86,12 +86,6 @@ function findFirst(text: string, regex: RegExp, fallback = "") {
   return text.match(regex)?.[1]?.trim() ?? fallback;
 }
 
-function allMoneyValues(text: string) {
-  return [...text.matchAll(new RegExp(moneyPattern, "g"))]
-    .map((match) => toNumber(match[0]))
-    .filter((value) => value !== 0);
-}
-
 function firstNumberAfter(text: string, label: string) {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const found = text.match(new RegExp(`${escaped}\\D+(\\d+)`, "i"))?.[1];
@@ -143,29 +137,27 @@ function carrierTrackingFromSellerCenter(text: string) {
 }
 
 function inferOrderAmounts(text: string, quantity: number) {
-  const money = allMoneyValues(text).map((value) => Math.abs(value));
-  const customerTotal = matchMoney(text, ["Order total", "Customer total", "Total"]);
-  const taxes = matchMoney(text, ["Taxes and other fees", "Taxes", "Tax"]);
-  const subtotal = matchMoney(text, ["Subtotal", "Item subtotal", "Product subtotal"]);
+  const rawTotal = matchMoney(text, ["Order total", "Customer total", "Total"]);
+  const ignoredTax = matchMoney(text, ["Taxes and other fees", "Taxes", "Tax"]);
+  const rawSubtotal = matchMoney(text, ["Subtotal", "Item subtotal", "Product subtotal"]);
+  const customerShippingPaid = matchMoney(text, ["Shipping fee charged to customer", "Shipping fee"]);
   const unitPrice =
     matchMoney(text, ["Sale price", "Unit price", "Price"]) ||
     toPositiveMoney(findFirst(text, /^\s*\$(\d+(?:\.\d{2})?)\s*$/im));
 
-  const inferredTotal = customerTotal || money.at(-1) || 0;
-  const inferredTax = taxes || (money.length >= 2 ? money.find((value) => value < 10 && value !== unitPrice) ?? 0 : 0);
-  const inferredSubtotal =
-    subtotal ||
-    money.find((value) => quantity > 1 && Math.abs(value / quantity - 7.99) < 0.01) ||
-    (inferredTotal && inferredTax ? Number((inferredTotal - inferredTax).toFixed(2)) : 0);
+  const sellerProceeds =
+    rawTotal && ignoredTax
+      ? Number((rawTotal - ignoredTax).toFixed(2))
+      : Number((rawSubtotal + customerShippingPaid).toFixed(2));
   const inferredUnitPrice =
     unitPrice ||
-    (quantity > 0 && inferredSubtotal ? Number((inferredSubtotal / quantity).toFixed(2)) : 0);
+    (quantity > 0 && sellerProceeds ? Number((sellerProceeds / quantity).toFixed(2)) : 0);
 
   return {
-    subtotal: Number(inferredSubtotal.toFixed(2)),
+    subtotal: Number(sellerProceeds.toFixed(2)),
     unitPrice: Number(inferredUnitPrice.toFixed(2)),
-    taxes: Number(inferredTax.toFixed(2)),
-    customerTotal: Number(inferredTotal.toFixed(2)),
+    taxes: 0,
+    customerTotal: Number(sellerProceeds.toFixed(2)),
   };
 }
 
@@ -192,8 +184,8 @@ function parseOrderDetails(orderText: string): ParsedOrder {
   const inferred = inferOrderAmounts(text, quantity);
   const carrierTracking = carrierTrackingFromSellerCenter(text);
   const title =
-    matchValue(text, ["Product title", "Item title", "Product name", "Item"]) ||
     productTitleFromSellerCenter(text) ||
+    matchValue(text, ["Product title", "Item title", "Product name"]) ||
     "Unlabeled Walmart item";
 
   return {
@@ -310,9 +302,7 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
   if (!order.walmart_order_number) warnings.push("Walmart order number was not found.");
   if (!order.upc) warnings.push("UPC was not found; inventory matching will need manual correction.");
   if (!order.subtotal) warnings.push("Subtotal was not found.");
-  if (!order.customer_total && order.subtotal) {
-    order.customer_total = Number((order.subtotal + order.shipping_fee_charged + order.taxes).toFixed(2));
-  }
+  if (!order.customer_total && order.subtotal) order.customer_total = order.subtotal;
   if (!order.shipping_cost && feeFromTransactions) {
     order.shipping_cost = Number(feeFromTransactions.toFixed(2));
   }
@@ -324,7 +314,7 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
       quantity: order.quantity,
       net_payable: -Number((order.subtotal * walmartCommissionRate).toFixed(2)),
       status: "Auto-calculated",
-      raw_text: "Auto-calculated 15% Walmart commission from item subtotal.",
+      raw_text: "Auto-calculated 15% Walmart commission from seller proceeds.",
     });
   }
 

@@ -135,8 +135,8 @@ export async function saveParsedImport(parsed: ParsedImport) {
         status: order.status || order.shipping_status || "Parsed",
         subtotal: order.subtotal,
         shipping_fee_charged: order.shipping_fee_charged,
-        taxes: order.taxes,
-        customer_total: order.customer_total,
+        taxes: 0,
+        customer_total: order.subtotal,
         amount_adjusted: order.amount_adjusted,
       },
       { onConflict: "po_number" },
@@ -337,8 +337,8 @@ export async function updateOrderRecord(order: OrderView, input: OrderEditInput)
       customer_name: input.customer_name || null,
       status: input.status || "Parsed",
       subtotal: input.subtotal,
-      taxes: input.taxes,
-      customer_total: input.customer_total,
+      taxes: 0,
+      customer_total: input.subtotal,
     })
     .eq("id", order.id);
   if (orderResponse.error) throw formatSupabaseError("Updating order", orderResponse.error);

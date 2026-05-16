@@ -56,7 +56,7 @@ import {
   profitTrend,
   salesByItem,
 } from "@/lib/calculations";
-import { demoInventory, demoOrders, sampleOrderPaste, sampleTransactionPaste } from "@/lib/demo-data";
+import { demoInventory, demoOrders, sampleOrderPaste } from "@/lib/demo-data";
 import { parseWalmartImport } from "@/lib/parser";
 import {
   deleteOrderRecord,
@@ -102,7 +102,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [orderText, setOrderText] = useState(sampleOrderPaste);
-  const [transactionText, setTransactionText] = useState(sampleTransactionPaste);
+  const [transactionText, setTransactionText] = useState("");
   const [preview, setPreview] = useState<ParsedImport | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -166,12 +166,18 @@ export default function Home() {
   const updatePreviewOrder = (key: keyof ParsedOrder, value: string) => {
     if (!preview) return;
     const numericKeys = new Set(["quantity", "unit_price", "subtotal", "shipping_cost", "shipping_fee_charged", "taxes", "customer_total", "amount_adjusted"]);
+    const nextValue = numericKeys.has(key) ? Number(value) : value;
+    const nextOrder = {
+      ...preview.order,
+      [key]: nextValue,
+    };
+    if (key === "subtotal") {
+      nextOrder.customer_total = Number(value);
+      nextOrder.taxes = 0;
+    }
     setPreview({
       ...preview,
-      order: {
-        ...preview.order,
-        [key]: numericKeys.has(key) ? Number(value) : value,
-      },
+      order: nextOrder,
     });
   };
 
@@ -223,8 +229,8 @@ export default function Home() {
                 customer_name: input.customer_name,
                 status: input.status,
                 subtotal: input.subtotal,
-                taxes: input.taxes,
-                customer_total: input.customer_total,
+                taxes: 0,
+                customer_total: input.subtotal,
                 items: [
                   {
                     ...candidate.items[0],
@@ -490,10 +496,9 @@ function ImportView(props: {
     { key: "upc", label: "UPC" },
     { key: "quantity", label: "Quantity", type: "number" },
     { key: "unit_price", label: "Unit price", type: "number" },
-    { key: "subtotal", label: "Subtotal", type: "number" },
-    { key: "shipping_cost", label: "Shipping cost", type: "number" },
-    { key: "taxes", label: "Taxes", type: "number" },
-    { key: "customer_total", label: "Customer total", type: "number" },
+    { key: "subtotal", label: "Seller proceeds", type: "number" },
+    { key: "shipping_cost", label: "Shipping label cost", type: "number" },
+    { key: "shipping_fee_charged", label: "Customer shipping paid", type: "number" },
     { key: "customer_name", label: "Customer" },
     { key: "status", label: "Status" },
   ];
@@ -506,7 +511,11 @@ function ImportView(props: {
       </div>
       <div className="paste-card">
         <div className="card-heading"><h2>Walmart Transactions Paste</h2><span>Optional. Fee auto-calculates at 15%.</span></div>
-        <textarea value={props.transactionText} onChange={(event) => props.setTransactionText(event.target.value)} />
+        <textarea
+          value={props.transactionText}
+          placeholder="Optional. Leave blank to auto-calculate Walmart commission at 15%."
+          onChange={(event) => props.setTransactionText(event.target.value)}
+        />
       </div>
       <div className="import-actions">
         <button className="export-button" onClick={props.parsePreview}><Search size={16} /> Parse Preview</button>
@@ -560,8 +569,8 @@ function orderToEditInput(order: OrderView): OrderEditInput {
     quantity: item?.quantity || 1,
     unit_price: item?.unit_price || 0,
     subtotal: item?.subtotal || order.subtotal || 0,
-    taxes: order.taxes || 0,
-    customer_total: order.customer_total || 0,
+    taxes: 0,
+    customer_total: item?.subtotal || order.subtotal || order.customer_total || 0,
     shipping_cost: orderShipping(order),
     walmart_fee: orderFees(order),
   };
@@ -589,17 +598,18 @@ function OrdersView({
 
   const updateDraft = (key: keyof OrderEditInput, value: string) => {
     if (!draft) return;
-    const numeric = new Set(["quantity", "unit_price", "subtotal", "taxes", "customer_total", "shipping_cost", "walmart_fee"]);
+    const numeric = new Set(["quantity", "unit_price", "subtotal", "customer_total", "shipping_cost", "walmart_fee"]);
     const nextDraft = {
       ...draft,
       [key]: numeric.has(key) ? Number(value) : value,
     };
     if (key === "quantity" || key === "unit_price") {
       nextDraft.subtotal = Number((Number(nextDraft.quantity || 0) * Number(nextDraft.unit_price || 0)).toFixed(2));
-      nextDraft.customer_total = Number((nextDraft.subtotal + Number(nextDraft.taxes || 0)).toFixed(2));
+      nextDraft.customer_total = nextDraft.subtotal;
     }
-    if (key === "subtotal" || key === "taxes") {
-      nextDraft.customer_total = Number((Number(nextDraft.subtotal || 0) + Number(nextDraft.taxes || 0)).toFixed(2));
+    if (key === "subtotal") {
+      nextDraft.customer_total = Number(nextDraft.subtotal || 0);
+      nextDraft.taxes = 0;
     }
     setDraft(nextDraft);
   };
@@ -639,11 +649,9 @@ function OrdersView({
               ["walmart_item_id", "Item ID"],
               ["quantity", "Quantity", "number"],
               ["unit_price", "Unit price", "number"],
-              ["subtotal", "Subtotal", "number"],
-              ["taxes", "Taxes", "number"],
-              ["customer_total", "Customer total", "number"],
+              ["subtotal", "Seller proceeds", "number"],
               ["walmart_fee", "Walmart fee", "number"],
-              ["shipping_cost", "Shipping cost", "number"],
+              ["shipping_cost", "Shipping label cost", "number"],
             ].map(([key, label, type]) => (
               <label key={key}>
                 <span>{label}</span>
