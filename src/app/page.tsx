@@ -375,7 +375,7 @@ export default function Home() {
         {activeView === "orders" && (
           <OrdersView orders={orders} inventory={inventory} onEditOrder={editOrder} onDeleteOrder={deleteOrder} />
         )}
-        {activeView === "inventory" && <InventoryView inventory={inventory} updateCost={updateCost} />}
+        {activeView === "inventory" && <InventoryView inventory={inventory} orders={orders} updateCost={updateCost} />}
         {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
         {activeView === "settings" && <SettingsView configured={configured} />}
       </main>
@@ -695,28 +695,147 @@ function OrdersView({
   );
 }
 
-function InventoryView({ inventory, updateCost }: { inventory: InventoryItem[]; updateCost: (item: InventoryItem, value: string) => void }) {
+function itemOrderBreakdown(order: OrderView, upc: string, inventory: InventoryItem[]) {
+  const item = order.items.find((candidate) => candidate.upc === upc);
+  if (!item) return null;
+  const orderGrossValue = orderGross(order);
+  const itemGross = Number(item.subtotal || 0);
+  const share = orderGrossValue ? itemGross / orderGrossValue : 1;
+  const fees = orderFees(order) * share;
+  const shipping = orderShipping(order) * share;
+  const unitCost = Number(inventory.find((inventoryItem) => inventoryItem.upc === upc)?.unit_cost ?? item.unit_cost ?? 0);
+  const cogs = unitCost * Number(item.quantity || 0);
+  const refunds = order.transactions.filter((transaction) => /refund/i.test(transaction.transaction_type || transaction.status || ""));
+  const refundTotal = refunds.reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
+  const profit = itemGross - fees - shipping - cogs - refundTotal;
+
+  return {
+    order,
+    item,
+    itemGross,
+    fees,
+    shipping,
+    cogs,
+    refundTotal,
+    profit,
+    refunds,
+  };
+}
+
+function inventoryStats(item: InventoryItem, orders: OrderView[], inventory: InventoryItem[]) {
+  const rows = orders
+    .map((order) => itemOrderBreakdown(order, item.upc, inventory))
+    .filter(Boolean) as NonNullable<ReturnType<typeof itemOrderBreakdown>>[];
+  return {
+    rows,
+    unitsSold: rows.reduce((sum, row) => sum + Number(row.item.quantity || 0), 0),
+    gross: rows.reduce((sum, row) => sum + row.itemGross, 0),
+    fees: rows.reduce((sum, row) => sum + row.fees, 0),
+    shipping: rows.reduce((sum, row) => sum + row.shipping, 0),
+    cogs: rows.reduce((sum, row) => sum + row.cogs, 0),
+    refunds: rows.reduce((sum, row) => sum + row.refundTotal, 0),
+    profit: rows.reduce((sum, row) => sum + row.profit, 0),
+  };
+}
+
+function InventoryView({
+  inventory,
+  orders,
+  updateCost,
+}: {
+  inventory: InventoryItem[];
+  orders: OrderView[];
+  updateCost: (item: InventoryItem, value: string) => void;
+}) {
+  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
+  const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
+
   return (
-    <section className="table-card full">
-      <div className="card-heading"><h2>Inventory</h2><button className="tiny-button">Add Item</button></div>
-      <table>
-        <thead><tr><th>UPC</th><th>Item</th><th>SKU</th><th>On Hand</th><th>Unit Cost</th><th>Reorder</th><th>Supplier</th><th>Status</th></tr></thead>
-        <tbody>
-          {inventory.map((item) => (
-            <tr key={item.id}>
-              <td>{item.upc}</td>
-              <td>{item.product_name}</td>
-              <td>{item.sku || "-"}</td>
-              <td>{item.quantity_on_hand}</td>
-              <td><input className="cost-input" defaultValue={item.unit_cost} onBlur={(event) => updateCost(item, event.target.value)} /></td>
-              <td>{item.reorder_point}</td>
-              <td>{item.supplier || "-"}</td>
-              <td><span className={statusClass(item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock")}>{item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock"}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+    <div className="page-stack">
+      <section className="table-card full">
+        <div className="card-heading"><h2>Inventory</h2><button className="tiny-button">Add Item</button></div>
+        <table>
+          <thead><tr><th>UPC</th><th>Item</th><th>SKU</th><th>On Hand</th><th>Unit Cost</th><th>Units Sold</th><th>Profit</th><th>Reorder</th><th>Supplier</th><th>Status</th></tr></thead>
+          <tbody>
+            {inventory.map((item) => {
+              const stats = inventoryStats(item, orders, inventory);
+              return (
+                <tr key={item.id} className="clickable-row" onClick={() => setSelectedItem(item)}>
+                  <td>{item.upc}</td>
+                  <td>{item.product_name}</td>
+                  <td>{item.sku || "-"}</td>
+                  <td>{item.quantity_on_hand}</td>
+                  <td>
+                    <input
+                      className="cost-input"
+                      defaultValue={item.unit_cost}
+                      onClick={(event) => event.stopPropagation()}
+                      onBlur={(event) => updateCost(item, event.target.value)}
+                    />
+                  </td>
+                  <td>{stats.unitsSold}</td>
+                  <td className={stats.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(stats.profit)}</td>
+                  <td>{item.reorder_point}</td>
+                  <td>{item.supplier || "-"}</td>
+                  <td><span className={statusClass(item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock")}>{item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock"}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      {selectedItem && selectedStats && (
+        <section className="item-summary-card">
+          <div className="card-heading">
+            <div>
+              <h2>{selectedItem.product_name}</h2>
+              <span>UPC {selectedItem.upc}</span>
+            </div>
+            <button className="tiny-button" onClick={() => setSelectedItem(null)}>Close</button>
+          </div>
+
+          <div className="item-summary-grid">
+            <ReportCard title="Units Sold" value={String(selectedStats.unitsSold)} detail="Across saved orders" />
+            <ReportCard title="Seller Proceeds" value={currency(selectedStats.gross)} detail="Before commission, shipping, COGS" />
+            <ReportCard title="Total Profit" value={currency(selectedStats.profit)} detail="Proceeds - fees - shipping - COGS - refunds" />
+            <ReportCard title="Refunds" value={currency(selectedStats.refunds)} detail="Refund transactions found" />
+          </div>
+
+          <div className="formula item-formula">
+            <strong>Profit formula for this item</strong>
+            <span>{currency(selectedStats.profit)} = {currency(selectedStats.gross)} - {currency(selectedStats.fees)} fees - {currency(selectedStats.shipping)} shipping - {currency(selectedStats.cogs)} COGS - {currency(selectedStats.refunds)} refunds</span>
+          </div>
+
+          <div className="table-card embedded">
+            <div className="card-heading"><h2>Orders and Refunds</h2></div>
+            <table>
+              <thead><tr><th>PO / Order</th><th>Date</th><th>Customer</th><th>Qty</th><th>Proceeds</th><th>Fees</th><th>Shipping</th><th>COGS</th><th>Refunds</th><th>Profit</th><th>Status</th></tr></thead>
+              <tbody>
+                {selectedStats.rows.map((row) => (
+                  <tr key={`${row.order.id}-${row.item.id}`}>
+                    <td>{row.order.po_number}</td>
+                    <td>{row.order.order_date || "-"}</td>
+                    <td>{row.order.customer_name || "-"}</td>
+                    <td>{row.item.quantity}</td>
+                    <td>{currency(row.itemGross)}</td>
+                    <td>{currency(row.fees)}</td>
+                    <td>{currency(row.shipping)}</td>
+                    <td>{currency(row.cogs)}</td>
+                    <td>{currency(row.refundTotal)}</td>
+                    <td className={row.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(row.profit)}</td>
+                    <td><span className={statusClass(row.refundTotal ? "Refund" : row.order.status)}>{row.refundTotal ? "Refund" : row.order.status || "Parsed"}</span></td>
+                  </tr>
+                ))}
+                {!selectedStats.rows.length && (
+                  <tr><td colSpan={11}>No saved orders or refunds found for this UPC yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 
