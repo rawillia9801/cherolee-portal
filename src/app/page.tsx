@@ -223,6 +223,10 @@ export default function Home() {
 
   const updateCost = async (item: InventoryItem, value: string) => {
     const unitCost = Number(value);
+    if (Number.isNaN(unitCost) || unitCost < 0) {
+      setMessage("Cost Each must be a valid zero-or-higher number.");
+      return;
+    }
     if (!configured) {
       setInventory((current) =>
         current.map((candidate) =>
@@ -232,8 +236,13 @@ export default function Home() {
       setMessage("Demo Mode cost updated locally for preview. Supabase is required for persistence.");
       return;
     }
-    await updateInventoryItem(item.id, { unit_cost: unitCost });
-    await refresh();
+    try {
+      await updateInventoryItem(item.id, { unit_cost: unitCost });
+      await refresh();
+      setMessage(`Updated Cost Each for ${item.product_name}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Updating Cost Each failed.");
+    }
   };
 
   const editOrder = async (order: OrderView, input: OrderEditInput) => {

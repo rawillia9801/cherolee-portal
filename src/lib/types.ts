@@ -139,6 +139,10 @@ export type ParsedOrder = {
   customer_total: number;
   amount_adjusted: number;
   status: string;
+  fulfillment_type?: string;
+  category?: string;
+  product_type?: string;
+  location?: string;
 };
 
 export type ParsedTransaction = {
@@ -149,6 +153,10 @@ export type ParsedTransaction = {
   upc?: string;
   product_name?: string;
   amount_type?: string;
+  fulfillment_type?: string;
+  category?: string;
+  product_type?: string;
+  location?: string;
   quantity: number;
   net_payable: number;
   status?: string;

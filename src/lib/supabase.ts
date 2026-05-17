@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { calculateInventoryAdjustment } from "./inventory-mutations";
 import type { DashboardData, InventoryItem, InventoryMovement, OrderView, ParsedImport } from "./types";
 
 let client: SupabaseClient | null = null;
@@ -26,6 +27,10 @@ function assertRequired(value: string, label: string) {
   if (!value.trim()) {
     throw new Error(`${label} is required before saving.`);
   }
+}
+
+function isSchemaCompatibilityError(error: SupabaseLikeError | null | undefined) {
+  return Boolean(error && /schema cache|column|does not exist|inventory_movements|partner_item_id|partner_gtin|fulfillment_type|location|last_scanned_at|purchase_date|supplier/i.test(error.message ?? ""));
 }
 
 export function isSupabaseConfigured() {
@@ -96,6 +101,9 @@ export async function saveParsedImport(parsed: ParsedImport) {
   if (existingInventoryResponse.error) throw formatSupabaseError("Checking inventory item", existingInventoryResponse.error);
   const existingInventory = existingInventoryResponse.data as InventoryItem | null;
 
+  const transactionIdentity = transactions.find((transaction) => transaction.item_id || transaction.upc || transaction.product_name);
+  const transactionLocation = transactions.find((transaction) => transaction.location)?.location;
+  const transactionFulfillment = transactions.find((transaction) => transaction.fulfillment_type)?.fulfillment_type;
   const inventoryPayload = {
     upc,
     product_name: order.product_name === "Unlabeled Walmart item" && existingInventory?.product_name
@@ -107,25 +115,47 @@ export async function saveParsedImport(parsed: ParsedImport) {
       transactions.find((transaction) => transaction.item_id)?.item_id ||
       existingInventory?.walmart_item_id ||
       null,
-    partner_item_id: existingInventory?.partner_item_id || transactions.find((transaction) => transaction.item_id)?.item_id || null,
+    partner_item_id: existingInventory?.partner_item_id || transactionIdentity?.item_id || null,
     partner_gtin: existingInventory?.partner_gtin || order.upc || null,
-    fulfillment_type: existingInventory?.fulfillment_type || "Seller Fulfilled",
+    fulfillment_type: existingInventory?.fulfillment_type || order.fulfillment_type || transactionFulfillment || "Seller Fulfilled",
     needs_cost: !Number(existingInventory?.unit_cost),
     quantity_on_hand: existingInventory?.quantity_on_hand ?? 0,
     unit_cost: existingInventory?.unit_cost ?? 0,
     reorder_point: existingInventory?.reorder_point ?? 0,
     sku: existingInventory?.sku ?? null,
     supplier: existingInventory?.supplier ?? null,
-    location: existingInventory?.location ?? null,
+    location: existingInventory?.location || order.location || transactionLocation || null,
     notes: existingInventory?.notes ?? null,
   };
 
-  const inventoryResponse = await supabase
+  let inventoryResponse = await supabase
     .from("inventory_items")
     .upsert(inventoryPayload, { onConflict: "upc", ignoreDuplicates: false })
     .select("*")
     .single();
 
+  if (inventoryResponse.error && isSchemaCompatibilityError(inventoryResponse.error)) {
+    inventoryResponse = await supabase
+      .from("inventory_items")
+      .upsert(
+        {
+          upc: inventoryPayload.upc,
+          product_name: inventoryPayload.product_name,
+          marketplace: inventoryPayload.marketplace,
+          walmart_item_id: inventoryPayload.walmart_item_id,
+          needs_cost: inventoryPayload.needs_cost,
+          quantity_on_hand: inventoryPayload.quantity_on_hand,
+          unit_cost: inventoryPayload.unit_cost,
+          reorder_point: inventoryPayload.reorder_point,
+          sku: inventoryPayload.sku,
+          supplier: inventoryPayload.supplier,
+          notes: inventoryPayload.notes,
+        },
+        { onConflict: "upc", ignoreDuplicates: false },
+      )
+      .select("*")
+      .single();
+  }
   if (inventoryResponse.error) throw formatSupabaseError("Upserting inventory item", inventoryResponse.error);
   const inventoryItem = inventoryResponse.data as InventoryItem;
 
@@ -243,7 +273,9 @@ export async function saveParsedImport(parsed: ParsedImport) {
   if (importInsert.error) throw formatSupabaseError("Recording import log", importInsert.error);
 
   const quantityDelta = order.quantity - previousQuantity;
-  if (!wasExistingOrder || quantityDelta !== 0) {
+  const fulfillmentType = `${order.fulfillment_type || transactionFulfillment || inventoryItem.fulfillment_type || ""}`;
+  const shouldDeductInventory = !/wfs|walmart-fulfilled/i.test(fulfillmentType);
+  if (shouldDeductInventory && (!wasExistingOrder || quantityDelta !== 0)) {
     const quantityUpdate = await supabase
       .from("inventory_items")
       .update({
@@ -252,7 +284,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
       })
       .eq("id", inventoryItem.id);
     if (quantityUpdate.error) throw formatSupabaseError("Deducting inventory quantity", quantityUpdate.error);
-    const movementInsert = await supabase.from("inventory_movements").insert({
+    const movementPayload = {
       inventory_item_id: inventoryItem.id,
       movement_type: quantityDelta > 0 ? "sale_deduction" : "correction",
       quantity_change: -quantityDelta,
@@ -263,8 +295,23 @@ export async function saveParsedImport(parsed: ParsedImport) {
       source_po_number: poNumber,
       settlement_import_id: importInsert.data?.id ?? null,
       created_by: "System",
-    });
-    if (movementInsert.error) throw formatSupabaseError("Recording inventory movement", movementInsert.error);
+    };
+    const movementInsert = await supabase.from("inventory_movements").insert(movementPayload);
+    if (movementInsert.error && isSchemaCompatibilityError(movementInsert.error)) {
+      const fallbackMovement = await supabase.from("inventory_movements").insert({
+        inventory_item_id: movementPayload.inventory_item_id,
+        movement_type: movementPayload.movement_type,
+        quantity_change: movementPayload.quantity_change,
+        reason: movementPayload.reason,
+        source: movementPayload.source,
+        created_by: movementPayload.created_by,
+      });
+      if (fallbackMovement.error && !isSchemaCompatibilityError(fallbackMovement.error)) {
+        throw formatSupabaseError("Recording inventory movement", fallbackMovement.error);
+      }
+    } else if (movementInsert.error) {
+      throw formatSupabaseError("Recording inventory movement", movementInsert.error);
+    }
   }
 
   return savedOrder.id as string;
@@ -302,23 +349,22 @@ export async function adjustInventoryQuantity(input: {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const quantity = Math.max(1, Math.round(input.quantity || 1));
-  if (input.direction === "remove" && !input.reason) {
-    throw new Error("Please select a removal reason.");
-  }
-
-  const currentQuantity = Number(input.item.quantity_on_hand || 0);
-  const quantityChange = input.direction === "add" ? quantity : -quantity;
-  const nextQuantity = currentQuantity + quantityChange;
-  if (nextQuantity < 0) throw new Error("Inventory cannot go below zero.");
+  const adjustment = calculateInventoryAdjustment({
+    item: input.item,
+    quantity: input.quantity,
+    direction: input.direction,
+    reason: input.reason,
+    unitCost: input.unitCost,
+    supplier: input.supplier,
+  });
 
   const updateResponse = await supabase
     .from("inventory_items")
     .update({
-      quantity_on_hand: nextQuantity,
-      unit_cost: input.unitCost !== undefined && input.unitCost >= 0 ? input.unitCost : input.item.unit_cost,
-      supplier: input.supplier?.trim() || input.item.supplier || null,
-      needs_cost: input.unitCost !== undefined ? !Number(input.unitCost) : input.item.needs_cost,
+      quantity_on_hand: adjustment.nextQuantity,
+      unit_cost: adjustment.unitCost,
+      supplier: adjustment.supplier,
+      needs_cost: adjustment.needsCost,
       last_scanned_at: input.scan ? new Date().toISOString() : input.item.last_scanned_at ?? null,
     })
     .eq("id", input.item.id);
@@ -327,7 +373,7 @@ export async function adjustInventoryQuantity(input: {
   const movementPayload = {
     inventory_item_id: input.item.id,
     movement_type: input.direction === "add" ? (input.scan ? "scan_add" : "manual_add") : input.scan ? "scan_remove" : "manual_remove",
-    quantity_change: quantityChange,
+    quantity_change: adjustment.quantityChange,
     reason: input.direction === "add" ? input.reason || (input.scan ? "Added by scan" : "Manual add") : input.reason,
     source: input.source || (input.scan ? "Barcode Scan" : "Admin"),
     purchase_date: input.purchaseDate || null,

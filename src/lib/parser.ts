@@ -147,20 +147,20 @@ function transactionKind(type: string, description: string, amountType: string) 
   if (/return\s*processing/i.test(joined)) return "WFS Return Processing Fee";
   if (/return\s*refund|refund/i.test(joined)) return "Refund";
   if (/shipping label/i.test(joined)) return "Shipping Label";
-  if (/commission/i.test(joined)) return "Walmart Service Fee";
-  if (/product\s*tax|\btax\b/i.test(joined)) return "Tax";
+  if (/commission|commissi/i.test(joined)) return "Walmart Service Fee";
+  if (/product\s*tax|product\s*ta|\btax\b/i.test(joined)) return "Tax";
   if (/wfs\s*fulfillment/i.test(joined)) return "WFS Fulfillment Fee";
   if (/storage\s*fee|storagefee/i.test(joined)) return "WFS Storage Fee";
   if (/inventory\s*removal/i.test(joined)) return "WFS Inventory Removal Fee";
   if (/inbound\s*transportation/i.test(joined)) return "WFS Inbound Transportation Fee";
   if (/reserve/i.test(joined)) return "Reserve";
   if (/service fee|wfs|fee/i.test(joined)) return description || type || amountType || "Service Fee";
-  if (/sale|purchase|product\s*price/i.test(joined)) return "Sale";
+  if (/sale|purchase|product\s*price|product\s*pr/i.test(joined)) return "Sale";
   return type || amountType || "Transaction";
 }
 
 function parseTransactionReport(transactionText: string, fallbackPo: string): ParsedTransaction[] {
-  const rawLines = transactionText.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const rawLines = transactionText.replace(/\r/g, "\n").split("\n").filter((line) => line.trim());
   const headerLineIndex = rawLines.findIndex((line) => /transaction\s*type/i.test(line) && /amount/i.test(line));
   if (headerLineIndex < 0) return [];
 
@@ -178,7 +178,13 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
     upc: headerIndex(headers, ["Partner GTIN", "UPC", "GTIN"]),
     productName: headerIndex(headers, ["Partner Item Name", "Product Name", "Product Title", "Item Name", "Item Description"]),
     status: headerIndex(headers, ["Transaction Status", "Status"]),
-    date: headerIndex(headers, ["Transaction Date", "Date"]),
+    date: headerIndex(headers, ["Transaction Posted Timestamp", "Transaction Date", "Date"]),
+    fulfillmentType: headerIndex(headers, ["Fulfillment Type"]),
+    state: headerIndex(headers, ["Ship to State"]),
+    city: headerIndex(headers, ["Ship to City"]),
+    zip: headerIndex(headers, ["Ship to Zipcode", "Ship to Zip", "Zipcode"]),
+    category: headerIndex(headers, ["Contract Category"]),
+    productType: headerIndex(headers, ["Product Type"]),
   };
 
   return rawLines
@@ -207,6 +213,10 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
         upc: normalizeIdentifier(cell(row, indexes.upc)),
         product_name: cell(row, indexes.productName),
         amount_type: amountType,
+        fulfillment_type: cell(row, indexes.fulfillmentType),
+        category: cell(row, indexes.category),
+        product_type: cell(row, indexes.productType),
+        location: [cell(row, indexes.city), cell(row, indexes.state), cell(row, indexes.zip)].filter(Boolean).join(", "),
         quantity: Number.isNaN(quantity) || quantity < 1 ? 1 : quantity,
         net_payable: Number(signedAmount.toFixed(2)),
         status: cell(row, indexes.status) || amountType || "Imported",
@@ -220,7 +230,7 @@ function settlementRecords(text: string) {
   const lines = text.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
   const records: string[] = [];
   let current = "";
-  const startPattern = /^(?:\d{1,2}\/\d{1,2}\/\d{4}\s+){0,2}(?:[\d.]+\s+USD\s+)?(?:20\d{2}_\d{2}_\d{2}_\d+|\d{1,2}\/\d{1,2}\/\d{4}\s+(?:PaymentSummary|Release Reserve|Service Fee))/i;
+  const startPattern = /^(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})(?:\s+(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,}))*\s+(?:[\d.]+\s+USD\s+)?(?:20\d{2}_\d{2}_\d{2}_\d+|(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(?:PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund))/i;
 
   for (const line of lines) {
     if (/period start date|number of lines/i.test(line)) continue;
@@ -245,15 +255,18 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
     "WFS Inbound Fee",
     "Fee/Reimbursement",
     "Commission on Product",
+    "Commissi",
     "Product tax withheld",
     "Product Price",
     "Product tax",
+    "Product Pr",
+    "Product ta",
   ];
   const amountTypePattern = amountTypes.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
 
   const parsed: (ParsedTransaction | null)[] = settlementRecords(transactionText)
     .map((record): ParsedTransaction | null => {
-      const start = record.match(/(?:20\d{2}_\d{2}_\d{2}_\d+\s+)?(\d{1,2}\/\d{1,2}\/\d{4})\s+(PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund)\s+(.+)$/i);
+      const start = record.match(/(?:20\d{2}_\d{2}_\d{2}_\d+\s+)?(\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund|Adjustme)\s+(.+)$/i);
       if (!start) return null;
       const [, date, startType, rest] = start;
       const amountMatch = rest.match(new RegExp(`\\s(-?\\d+(?:\\.\\d+)?)\\s+(${amountTypePattern})\\b`, "i"));
@@ -287,6 +300,10 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
         }
       }
       const productName = itemIndex >= 0 ? afterTokens.slice(itemIndex + 2, nameEnd).join(" ") : "";
+      const state = nameEnd < afterTokens.length ? afterTokens[nameEnd + 1] : "";
+      const cityEnd = afterTokens.findIndex((token, index) => index > nameEnd + 1 && /^\d{5}(?:-\d{4})?$/.test(token));
+      const city = cityEnd > nameEnd + 1 ? afterTokens.slice(nameEnd + 2, cityEnd).join(" ") : "";
+      const zip = cityEnd > -1 ? afterTokens[cityEnd] : "";
       const po = purchaseOrder ? `${purchaseOrder}${purchaseLine ? `-${purchaseLine}` : ""}` : customerOrder || fallbackPo;
       const type = transactionKind(startType, description, rawAmountType);
       const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(type);
@@ -300,6 +317,10 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
         upc: gtin,
         product_name: productName,
         amount_type: rawAmountType,
+        fulfillment_type: /walmart-fulfilled|wfs/i.test(record) ? "Walmart-fulfilled(WFS)" : /seller fulfilled/i.test(record) ? "Seller Fulfilled" : undefined,
+        category: "",
+        product_type: "",
+        location: [city, state, zip].filter(Boolean).join(", "),
         quantity: Number.isNaN(quantity) || quantity < 1 ? 1 : quantity,
         net_payable: Number((chargeLike ? -Math.abs(amount) : amount).toFixed(2)),
         status: rawAmountType,
@@ -367,6 +388,7 @@ function orderFromTransactionGroup(poNumber: string, group: ParsedTransaction[],
   const quantity = Math.max(1, productSales.reduce((sum, transaction) => sum + Number(transaction.quantity || 0), 0) || 1);
   const shipping = shippingRows.reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
   const firstTransaction = group[0];
+  const productIdentity = group.find((transaction) => transaction.product_name || transaction.upc || transaction.item_id) ?? firstTransaction;
 
   return {
     groupCount,
@@ -375,7 +397,7 @@ function orderFromTransactionGroup(poNumber: string, group: ParsedTransaction[],
       walmart_order_number: poNumber,
       product_name: firstUsefulProductName(group),
       upc: firstUsefulUpc(group),
-      walmart_item_id: group.find((transaction) => transaction.item_id)?.item_id,
+      walmart_item_id: productIdentity.item_id,
       quantity,
       unit_price: Number((gross / quantity).toFixed(2)),
       subtotal: Number(gross.toFixed(2)),
@@ -386,6 +408,10 @@ function orderFromTransactionGroup(poNumber: string, group: ParsedTransaction[],
       customer_total: Number(gross.toFixed(2)),
       amount_adjusted: 0,
       status: firstTransaction.status || "Imported",
+      fulfillment_type: productIdentity.fulfillment_type,
+      category: productIdentity.category,
+      product_type: productIdentity.product_type,
+      location: productIdentity.location,
     },
   };
 }
