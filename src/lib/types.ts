@@ -147,6 +147,8 @@ export type ParsedOrder = {
 
 export type ParsedTransaction = {
   po_number: string;
+  transaction_key?: string;
+  group_key?: string;
   transaction_date?: string;
   transaction_type: string;
   item_id?: string;

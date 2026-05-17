@@ -95,6 +95,15 @@ function normalizeIdentifier(value?: string) {
   return parsed.toLocaleString("en-US", { maximumFractionDigits: 0, useGrouping: false });
 }
 
+function isReliableOrderIdentifier(value?: string) {
+  if (!value) return false;
+  if (/[eE]\+/.test(value)) return false;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 10) return false;
+  if (/0{6,}$/.test(digits)) return false;
+  return true;
+}
+
 function normalizeHeader(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -179,6 +188,9 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
     productName: headerIndex(headers, ["Partner Item Name", "Product Name", "Product Title", "Item Name", "Item Description"]),
     status: headerIndex(headers, ["Transaction Status", "Status"]),
     date: headerIndex(headers, ["Transaction Posted Timestamp", "Transaction Date", "Date"]),
+    transactionKey: headerIndex(headers, ["Transaction Key"]),
+    purchaseOrderLine: headerIndex(headers, ["Purchase Order line #", "Purchase Order Line"]),
+    customerOrderLine: headerIndex(headers, ["Customer Order line #", "Customer Order Line"]),
     fulfillmentType: headerIndex(headers, ["Fulfillment Type"]),
     state: headerIndex(headers, ["Ship to State"]),
     city: headerIndex(headers, ["Ship to City"]),
@@ -204,9 +216,17 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
       const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(kind);
       const signedAmount = chargeLike ? -Math.abs(amount) : amount;
       const quantity = Number.parseInt(cell(row, indexes.quantity), 10);
+      const transactionKey = cell(row, indexes.transactionKey);
+      const orderLine = cell(row, indexes.purchaseOrderLine) || cell(row, indexes.customerOrderLine);
+      const reliablePo = isReliableOrderIdentifier(po);
+      const groupKey = reliablePo
+        ? po
+        : [transactionKey || normalizeIdentifier(cell(row, indexes.customerOrder)), orderLine, cell(row, indexes.upc), cell(row, indexes.productName)].filter(Boolean).join("|");
 
       return {
         po_number: po,
+        transaction_key: transactionKey,
+        group_key: groupKey || po,
         transaction_date: normalizeDate(cell(row, indexes.date)),
         transaction_type: kind,
         item_id: normalizeIdentifier(cell(row, indexes.itemId)),
@@ -230,7 +250,7 @@ function settlementRecords(text: string) {
   const lines = text.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
   const records: string[] = [];
   let current = "";
-  const startPattern = /^(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})(?:\s+(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,}))*\s+(?:[\d.]+\s+USD\s+)?(?:20\d{2}_\d{2}_\d{2}_\d+|(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(?:PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund))/i;
+  const startPattern = /^(?:20\d{2}_\d{2}_\d{2}_\d+\s+(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(?:Adjustment|Sale|Refund|Adjustme)|(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})(?:\s+(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,}))*\s+(?:[\d.]+\s+USD\s+)?(?:20\d{2}_\d{2}_\d{2}_\d+|(?:\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(?:PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund)))/i;
 
   for (const line of lines) {
     if (/period start date|number of lines/i.test(line)) continue;
@@ -266,9 +286,9 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
 
   const parsed: (ParsedTransaction | null)[] = settlementRecords(transactionText)
     .map((record): ParsedTransaction | null => {
-      const start = record.match(/(?:20\d{2}_\d{2}_\d{2}_\d+\s+)?(\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund|Adjustme)\s+(.+)$/i);
+      const start = record.match(/(?:(20\d{2}_\d{2}_\d{2}_\d+)\s+)?(\d{1,2}\/\d{1,2}\/\d{4}|#{4,})\s+(PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund|Adjustme)\s+(.+)$/i);
       if (!start) return null;
-      const [, date, startType, rest] = start;
+      const [, transactionKey = "", date, startType, rest] = start;
       const amountMatch = rest.match(new RegExp(`\\s(-?\\d+(?:\\.\\d+)?)\\s+(${amountTypePattern})\\b`, "i"));
       if (!amountMatch) return null;
       const [, rawAmount, rawAmountType] = amountMatch;
@@ -305,12 +325,18 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
       const city = cityEnd > nameEnd + 1 ? afterTokens.slice(nameEnd + 2, cityEnd).join(" ") : "";
       const zip = cityEnd > -1 ? afterTokens[cityEnd] : "";
       const po = purchaseOrder ? `${purchaseOrder}${purchaseLine ? `-${purchaseLine}` : ""}` : customerOrder || fallbackPo;
+      const reliablePo = isReliableOrderIdentifier(purchaseOrder || customerOrder || fallbackPo);
+      const groupKey = reliablePo
+        ? po
+        : [transactionKey, purchaseLine, gtin, productName].filter(Boolean).join("|");
       const type = transactionKind(startType, description, rawAmountType);
       const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(type);
       const amount = toNumber(rawAmount);
 
       return {
         po_number: po,
+        transaction_key: transactionKey,
+        group_key: groupKey || po,
         transaction_date: normalizeDate(date),
         transaction_type: type,
         item_id: itemId,
@@ -335,7 +361,7 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
 }
 
 function transactionOrderKey(transaction: ParsedTransaction) {
-  return transaction.po_number?.trim();
+  return (transaction.group_key || transaction.po_number)?.trim();
 }
 
 function chooseTransactionGroup(transactions: ParsedTransaction[]) {
@@ -642,7 +668,7 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
 
   const text = compact(transactionText);
   if (!text) return [];
-  if (looksLikeSettlementRows(text)) return parseFreeformSettlementRows(text, fallbackPo);
+  if (looksLikeSettlementRows(text)) return parseFreeformSettlementRows(transactionText, fallbackPo);
   const lines = normalizeTransactionRows(text);
   const parsed = lines.map((line) => parseTransactionLine(line, fallbackPo)).filter(Boolean) as ParsedTransaction[];
 
@@ -672,8 +698,8 @@ function isSettlementReportPaste(text: string) {
 }
 
 function looksLikeSettlementRows(text: string) {
-  return /commission on product|product tax withheld|walmart shipping label|wfs fulfillment|product price/i.test(text) &&
-    /\d{4}_\d{2}_\d{2}|[12]\.\d+E\+\d+/i.test(text);
+  return /commission on product|commissi|product tax withheld|product ta|walmart shipping label|wfs fulfillment|product price|product pr/i.test(text) &&
+    /\d{4}_\d{2}_\d{2}|\d+(?:\.\d+)?E\+\d+/i.test(text);
 }
 
 function hasDelimitedSettlementHeader(text: string) {

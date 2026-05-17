@@ -73,6 +73,15 @@ assert.ok(freeform.order.product_name.includes("Bonide"), "freeform fallback sho
 assert.notEqual(freeform.order.upc, "North Platte", "freeform fallback must not use city as UPC");
 assert.ok(freeform.order.subtotal > 0, "freeform fallback should capture sales amount");
 
+const roundedExcelVisiblePaste = parseWalmartImport("", `
+2026_04_20_742224 ######## Sale Purchase 2E+14 1 1.19E+14 1 19.99 Product Pr 1 37321002277 37321002277 Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent 3001194 NE North Platte 69101 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery
+2026_04_20_742224 ######## Sale Purchase 2E+14 1 1.19E+14 1 -3 Commissi 1 15 15 37321002277 37321002277 Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent 3001194 NE North Platte 69101 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery
+2026_04_21_999999 ######## Sale Purchase 2E+14 1 1.19E+14 1 28.99 Product Pr 1 645397938446 645397938446 Skeeter Hawk Backyard Mosquito and Flying Insect Bait Station All-Natural Insecticide 3001194 NE Lincoln 68528 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery
+2026_04_21_999999 ######## Sale Purchase 2E+14 1 1.19E+14 1 -4.35 Commissi 1 15 15 645397938446 645397938446 Skeeter Hawk Backyard Mosquito and Flying Insect Bait Station All-Natural Insecticide 3001194 NE Lincoln 68528 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery
+`);
+assert.equal(roundedExcelVisiblePaste.batch?.length, 2, "rounded Excel-visible order ids must not collapse separate sale events");
+assert.ok(roundedExcelVisiblePaste.batch?.every((entry) => entry.order.product_name !== entry.order.location), "location must not become the item group");
+
 const inventoryItem: InventoryItem = {
   id: "inv-1",
   upc: "645397938446",

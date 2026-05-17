@@ -1256,6 +1256,13 @@ function InventoryView({
                   <label>Remove Qty<input type="number" value={removeQty} onChange={(event) => setRemoveQty(Math.max(1, Number(event.target.value)))} /></label>
                   <button onClick={() => setRemoveQty(removeQty + 1)}><Plus size={15} /></button>
                 </div>
+                <div className="inline-reason-pills">
+                  {(["Gifted", "Kept", "Damaged", "Other"] as RemoveReason[]).map((reason) => (
+                    <button type="button" className={clsx(removeReason === reason && "active")} key={reason} onClick={() => setRemoveReason(reason)}>
+                      {reason}
+                    </button>
+                  ))}
+                </div>
                 <small>Decreases inventory. Reason required if not from sale.</small>
                 <button className="danger-button" onClick={() => adjustItem(selectedItem, "remove", removeQty)}>Remove Inventory</button>
               </div>

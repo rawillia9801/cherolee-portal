@@ -40,9 +40,14 @@ export function isSupabaseConfigured() {
 export function getSupabaseClient() {
   if (!isSupabaseConfigured()) return null;
   if (!client) {
+    const key =
+      typeof window === "undefined"
+        ? process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+        : process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
     client = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      key,
+      { auth: { persistSession: false } },
     );
   }
   return client;
@@ -318,6 +323,16 @@ export async function saveParsedImport(parsed: ParsedImport) {
 }
 
 export async function updateInventoryItem(id: string, patch: Partial<InventoryItem>) {
+  if (typeof window !== "undefined") {
+    const response = await fetch("/api/inventory/item", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, patch }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Updating inventory item failed.");
+    return;
+  }
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
   const nextPatch = {
@@ -346,6 +361,26 @@ export async function adjustInventoryQuantity(input: {
   supplier?: string;
   purchaseDate?: string;
 }) {
+  if (typeof window !== "undefined") {
+    const response = await fetch("/api/inventory/adjust", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        itemId: input.item.id,
+        quantity: input.quantity,
+        direction: input.direction,
+        reason: input.reason,
+        source: input.source,
+        scan: input.scan,
+        unitCost: input.unitCost,
+        supplier: input.supplier,
+        purchaseDate: input.purchaseDate,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Inventory adjustment failed.");
+    return;
+  }
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
@@ -401,6 +436,16 @@ export async function adjustInventoryQuantity(input: {
 }
 
 export async function createInventoryItem(input: { upc: string; product_name?: string }) {
+  if (typeof window !== "undefined") {
+    const response = await fetch("/api/inventory/item", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Creating inventory item failed.");
+    return payload.item as InventoryItem;
+  }
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
   const upc = normalizeLookup(input.upc);
