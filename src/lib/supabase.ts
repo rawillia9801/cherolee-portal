@@ -717,3 +717,22 @@ export async function deleteOrderRecord(order: OrderView) {
   const deleteResponse = await supabase.from("orders").delete().eq("id", order.id);
   if (deleteResponse.error) throw formatSupabaseError("Deleting order", deleteResponse.error);
 }
+
+export async function deleteAllOrders() {
+  if (typeof window !== "undefined") {
+    const response = await fetch("/api/orders/bulk", { method: "DELETE" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Deleting all orders failed.");
+    return Number(payload.deleted || 0);
+  }
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const ordersResponse = await supabase
+    .from("orders")
+    .select("*, items:order_items(*), fees:order_fees(*), shipments(*), transactions(*)");
+  if (ordersResponse.error) throw formatSupabaseError("Loading orders before bulk delete", ordersResponse.error);
+  for (const order of (ordersResponse.data ?? []) as OrderView[]) {
+    await deleteOrderRecord(order);
+  }
+  return ordersResponse.data?.length ?? 0;
+}

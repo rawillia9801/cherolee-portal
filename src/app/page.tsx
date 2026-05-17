@@ -66,6 +66,7 @@ import { demoInventory, demoMovements, demoOrders } from "@/lib/demo-data";
 import { parseWalmartImport } from "@/lib/parser";
 import {
   deleteOrderRecord,
+  deleteAllOrders,
   adjustInventoryQuantity,
   createInventoryItem,
   isSupabaseConfigured,
@@ -302,6 +303,26 @@ export default function Home() {
     setMessage(`Deleted PO ${order.po_number} and restored inventory quantity.`);
   };
 
+  const deleteEveryOrder = async () => {
+    if (!window.confirm("Delete ALL orders? This will remove every order and restore sold quantities to inventory.")) return;
+    if (!configured) {
+      const count = orders.length;
+      setOrders([]);
+      setMessage(`Demo Mode deleted ${count} orders locally.`);
+      return;
+    }
+    setSaving(true);
+    try {
+      const deleted = await deleteAllOrders();
+      await refresh();
+      setMessage(`Deleted ${deleted} orders and restored inventory quantities.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Deleting all orders failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const mainTitle = views.find((view) => view.id === activeView)?.label ?? "Dashboard";
 
   return (
@@ -409,7 +430,7 @@ export default function Home() {
         )}
 
         {activeView === "orders" && (
-          <OrdersView orders={orders} inventory={inventory} onEditOrder={editOrder} onDeleteOrder={deleteOrder} />
+          <OrdersView orders={orders} inventory={inventory} onEditOrder={editOrder} onDeleteOrder={deleteOrder} onDeleteAllOrders={deleteEveryOrder} />
         )}
         {activeView === "inventory" && (
           <InventoryView
@@ -664,11 +685,13 @@ function OrdersView({
   inventory,
   onEditOrder,
   onDeleteOrder,
+  onDeleteAllOrders,
 }: {
   orders: OrderView[];
   inventory: InventoryItem[];
   onEditOrder: (order: OrderView, input: OrderEditInput) => Promise<void>;
   onDeleteOrder: (order: OrderView) => Promise<void>;
+  onDeleteAllOrders: () => Promise<void>;
 }) {
   const [editingOrder, setEditingOrder] = useState<OrderView | null>(null);
   const [draft, setDraft] = useState<OrderEditInput | null>(null);
@@ -713,6 +736,15 @@ function OrdersView({
 
   return (
     <div className="page-stack">
+      <section className="orders-toolbar">
+        <div>
+          <strong>{orders.length} orders</strong>
+          <span>Delete bad imports in one action.</span>
+        </div>
+        <button className="danger-button" onClick={() => void onDeleteAllOrders()}>
+          <Trash2 size={16} /> Delete All Orders
+        </button>
+      </section>
       <OrdersTable orders={orders} inventory={inventory} onEdit={startEdit} onDelete={onDeleteOrder} />
       {editingOrder && draft && (
         <section className="preview-card">

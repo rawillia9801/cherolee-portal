@@ -682,6 +682,28 @@ th {
   gap: 16px;
 }
 
+.orders-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #dfe5f2;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(20, 28, 45, 0.04);
+}
+
+.orders-toolbar div {
+  display: grid;
+  gap: 3px;
+}
+
+.orders-toolbar span {
+  color: #667085;
+  font-size: 13px;
+}
+
 .item-summary-card {
   padding: 16px;
 }
