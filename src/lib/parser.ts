@@ -165,7 +165,7 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
   if (headerLineIndex < 0) return [];
 
   const headers = delimitedCells(rawLines[headerLineIndex]);
-  if (headers.length < 8) return [];
+  if (headers.length < 8) return parseFreeformSettlementRows(transactionText, fallbackPo);
   const indexes = {
     type: headerIndex(headers, ["Transaction Type"]),
     description: headerIndex(headers, ["Transaction Description"]),
@@ -214,6 +214,103 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
       };
     })
     .filter((transaction) => transaction.po_number && transaction.transaction_type && transaction.net_payable !== 0);
+}
+
+function settlementRecords(text: string) {
+  const lines = text.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const records: string[] = [];
+  let current = "";
+  const startPattern = /^(?:\d{1,2}\/\d{1,2}\/\d{4}\s+){0,2}(?:[\d.]+\s+USD\s+)?(?:20\d{2}_\d{2}_\d{2}_\d+|\d{1,2}\/\d{1,2}\/\d{4}\s+(?:PaymentSummary|Release Reserve|Service Fee))/i;
+
+  for (const line of lines) {
+    if (/period start date|number of lines/i.test(line)) continue;
+    if (startPattern.test(line) && current) {
+      records.push(current.trim());
+      current = line;
+      continue;
+    }
+    current = current ? `${current} ${line}` : line;
+  }
+  if (current) records.push(current.trim());
+  return records;
+}
+
+function isIdLike(value: string) {
+  return /^(?:\d{6,}|\d+(?:\.\d+)?E\+\d+)$/i.test(value);
+}
+
+function parseFreeformSettlementRows(transactionText: string, fallbackPo: string): ParsedTransaction[] {
+  const amountTypes = [
+    "WFS Inventory Fee/Reimbursement",
+    "WFS Inbound Fee",
+    "Fee/Reimbursement",
+    "Commission on Product",
+    "Product tax withheld",
+    "Product Price",
+    "Product tax",
+  ];
+  const amountTypePattern = amountTypes.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+
+  const parsed: (ParsedTransaction | null)[] = settlementRecords(transactionText)
+    .map((record): ParsedTransaction | null => {
+      const start = record.match(/(?:20\d{2}_\d{2}_\d{2}_\d+\s+)?(\d{1,2}\/\d{1,2}\/\d{4})\s+(PaymentSummary|Release Reserve|Service Fee|Adjustment|Sale|Refund)\s+(.+)$/i);
+      if (!start) return null;
+      const [, date, startType, rest] = start;
+      const amountMatch = rest.match(new RegExp(`\\s(-?\\d+(?:\\.\\d+)?)\\s+(${amountTypePattern})\\b`, "i"));
+      if (!amountMatch) return null;
+      const [, rawAmount, rawAmountType] = amountMatch;
+
+      const beforeAmount = rest.slice(0, amountMatch.index).trim();
+      const afterAmountType = rest.slice((amountMatch.index ?? 0) + amountMatch[0].length).trim();
+      const beforeTokens = beforeAmount.split(/\s+/);
+      const purchaseLine = beforeTokens.at(-1) ?? "";
+      const purchaseOrder = normalizeIdentifier(beforeTokens.at(-2));
+      const customerOrder = normalizeIdentifier(beforeTokens.at(-4));
+      const description = beforeTokens.slice(0, Math.max(1, beforeTokens.length - 4)).join(" ") || startType;
+
+      const afterTokens = afterAmountType.split(/\s+/).filter(Boolean);
+      const quantity = Number.parseInt(afterTokens[0] ?? "1", 10);
+      let itemIndex = -1;
+      for (let index = 1; index < afterTokens.length - 1; index += 1) {
+        if (isIdLike(afterTokens[index]) && isIdLike(afterTokens[index + 1])) {
+          itemIndex = index;
+          break;
+        }
+      }
+      const itemId = itemIndex >= 0 ? normalizeIdentifier(afterTokens[itemIndex]) : "";
+      const gtin = itemIndex >= 0 ? normalizeIdentifier(afterTokens[itemIndex + 1]) : "";
+      let nameEnd = afterTokens.length;
+      for (let index = itemIndex + 2; index < afterTokens.length - 2; index += 1) {
+        if (/^\d{6,8}$/.test(afterTokens[index]) && /^[A-Z]{2}$/i.test(afterTokens[index + 1])) {
+          nameEnd = index;
+          break;
+        }
+      }
+      const productName = itemIndex >= 0 ? afterTokens.slice(itemIndex + 2, nameEnd).join(" ") : "";
+      const po = purchaseOrder ? `${purchaseOrder}${purchaseLine ? `-${purchaseLine}` : ""}` : customerOrder || fallbackPo;
+      const type = transactionKind(startType, description, rawAmountType);
+      const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(type);
+      const amount = toNumber(rawAmount);
+
+      return {
+        po_number: po,
+        transaction_date: normalizeDate(date),
+        transaction_type: type,
+        item_id: itemId,
+        upc: gtin,
+        product_name: productName,
+        amount_type: rawAmountType,
+        quantity: Number.isNaN(quantity) || quantity < 1 ? 1 : quantity,
+        net_payable: Number((chargeLike ? -Math.abs(amount) : amount).toFixed(2)),
+        status: rawAmountType,
+        raw_text: record,
+      };
+    });
+
+  return parsed.filter((transaction): transaction is ParsedTransaction => (
+    transaction !== null &&
+    Boolean(transaction.po_number && transaction.transaction_type && transaction.net_payable !== 0)
+  ));
 }
 
 function transactionOrderKey(transaction: ParsedTransaction) {
@@ -519,7 +616,7 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
 
   const text = compact(transactionText);
   if (!text) return [];
-  if (looksLikeSettlementRows(text)) return [];
+  if (looksLikeSettlementRows(text)) return parseFreeformSettlementRows(text, fallbackPo);
   const lines = normalizeTransactionRows(text);
   const parsed = lines.map((line) => parseTransactionLine(line, fallbackPo)).filter(Boolean) as ParsedTransaction[];
 

@@ -904,6 +904,9 @@ function InventoryView({
   const [missingLookup, setMissingLookup] = useState("");
   const [newItemName, setNewItemName] = useState("");
   const [creatingItem, setCreatingItem] = useState(false);
+  const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().slice(0, 10));
+  const [purchaseSource, setPurchaseSource] = useState("");
+  const [addUnitCost, setAddUnitCost] = useState("");
 
   const selectedItem = missingLookup ? null : inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
@@ -983,35 +986,62 @@ function InventoryView({
       setMessage("Please select a removal reason.");
       return;
     }
-    if (!configured) {
-      const quantityChange = direction === "add" ? quantity : -quantity;
-      setInventory((current) =>
-        current.map((candidate) =>
-          candidate.id === item.id
-            ? { ...candidate, quantity_on_hand: Math.max(0, candidate.quantity_on_hand + quantityChange), last_scanned_at: scan ? new Date().toISOString() : candidate.last_scanned_at }
-            : candidate,
-        ),
-      );
-      setMovements((current) => [
-        {
-          id: `demo-movement-${Date.now()}`,
-          inventory_item_id: item.id,
-          movement_type: direction === "add" ? (scan ? "scan_add" : "manual_add") : scan ? "scan_remove" : "manual_remove",
-          quantity_change: quantityChange,
-          reason: direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason),
-          source: scan ? "Barcode Scan" : "Admin",
-          created_by: "Admin",
-          created_at: new Date().toISOString(),
-        },
-        ...current,
-      ]);
-      setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+    const unitCost = addUnitCost === "" ? undefined : Number(addUnitCost);
+    if (direction === "add" && unitCost !== undefined && Number.isNaN(unitCost)) {
+      setMessage("Cost each must be a valid number.");
       return;
     }
-    const reason = direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason);
-    await adjustInventoryQuantity({ item, quantity, direction, reason, scan });
-    await refresh();
-    setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+    try {
+      if (!configured) {
+        const quantityChange = direction === "add" ? quantity : -quantity;
+        setInventory((current) =>
+          current.map((candidate) =>
+            candidate.id === item.id
+              ? {
+                  ...candidate,
+                  quantity_on_hand: Math.max(0, candidate.quantity_on_hand + quantityChange),
+                  unit_cost: direction === "add" && unitCost !== undefined ? unitCost : candidate.unit_cost,
+                  supplier: direction === "add" && purchaseSource.trim() ? purchaseSource.trim() : candidate.supplier,
+                  needs_cost: direction === "add" && unitCost !== undefined ? !Number(unitCost) : candidate.needs_cost,
+                  last_scanned_at: scan ? new Date().toISOString() : candidate.last_scanned_at,
+                }
+              : candidate,
+          ),
+        );
+        setMovements((current) => [
+          {
+            id: `demo-movement-${Date.now()}`,
+            inventory_item_id: item.id,
+            movement_type: direction === "add" ? (scan ? "scan_add" : "manual_add") : scan ? "scan_remove" : "manual_remove",
+            quantity_change: quantityChange,
+            reason: direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason),
+            source: scan ? "Barcode Scan" : "Admin",
+            supplier: purchaseSource || null,
+            purchase_date: purchaseDate || null,
+            created_by: "Admin",
+            created_at: new Date().toISOString(),
+          },
+          ...current,
+        ]);
+        setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+        return;
+      }
+      const reason = direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason);
+      await adjustInventoryQuantity({
+        item,
+        quantity,
+        direction,
+        reason,
+        scan,
+        unitCost: direction === "add" ? unitCost : undefined,
+        supplier: direction === "add" ? purchaseSource : undefined,
+        purchaseDate: direction === "add" ? purchaseDate : undefined,
+      });
+      await refresh();
+      setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Inventory adjustment failed.");
+    }
   };
 
   const createMissingItem = async () => {
@@ -1197,8 +1227,29 @@ function InventoryView({
               </div>
             </div>
             <div className="quantity-controls">
-              <div><button onClick={() => setAddQty(Math.max(1, addQty - 1))}><Minus size={15} /></button><label>Add Qty<input type="number" value={addQty} onChange={(event) => setAddQty(Math.max(1, Number(event.target.value)))} /></label><button onClick={() => setAddQty(addQty + 1)}><Plus size={15} /></button><small>Adds to inventory per scan</small><button className="export-button" onClick={() => adjustItem(selectedItem, "add", addQty)}>Add Qty</button></div>
-              <div><button onClick={() => setRemoveQty(Math.max(1, removeQty - 1))}><Minus size={15} /></button><label>Remove Qty<input type="number" value={removeQty} onChange={(event) => setRemoveQty(Math.max(1, Number(event.target.value)))} /></label><button onClick={() => setRemoveQty(removeQty + 1)}><Plus size={15} /></button><small>Decreases inventory. Reason required if not from sale.</small><button className="danger-button" onClick={() => adjustItem(selectedItem, "remove", removeQty)}>Remove Qty</button></div>
+              <div className="stock-adjust-card">
+                <div className="stepper-row">
+                  <button onClick={() => setAddQty(Math.max(1, addQty - 1))}><Minus size={15} /></button>
+                  <label>Add Qty<input type="number" value={addQty} onChange={(event) => setAddQty(Math.max(1, Number(event.target.value)))} /></label>
+                  <button onClick={() => setAddQty(addQty + 1)}><Plus size={15} /></button>
+                </div>
+                <div className="purchase-fields">
+                  <label>Cost each<input type="number" min="0" step="0.01" value={addUnitCost} placeholder={String(selectedItem.unit_cost || 0)} onChange={(event) => setAddUnitCost(event.target.value)} /></label>
+                  <label>Purchased date<input type="date" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} /></label>
+                  <label>Purchased from<input value={purchaseSource} placeholder="Supplier / store" onChange={(event) => setPurchaseSource(event.target.value)} /></label>
+                </div>
+                <small>Adds inventory and can update cost, supplier, and purchase date.</small>
+                <button className="export-button" onClick={() => adjustItem(selectedItem, "add", addQty)}>Add Inventory</button>
+              </div>
+              <div className="stock-adjust-card">
+                <div className="stepper-row">
+                  <button onClick={() => setRemoveQty(Math.max(1, removeQty - 1))}><Minus size={15} /></button>
+                  <label>Remove Qty<input type="number" value={removeQty} onChange={(event) => setRemoveQty(Math.max(1, Number(event.target.value)))} /></label>
+                  <button onClick={() => setRemoveQty(removeQty + 1)}><Plus size={15} /></button>
+                </div>
+                <small>Decreases inventory. Reason required if not from sale.</small>
+                <button className="danger-button" onClick={() => adjustItem(selectedItem, "remove", removeQty)}>Remove Inventory</button>
+              </div>
             </div>
           </section>
 

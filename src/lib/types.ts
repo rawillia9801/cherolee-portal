@@ -36,6 +36,8 @@ export type InventoryMovement = {
   source_order_number?: string | null;
   source_po_number?: string | null;
   settlement_import_id?: string | null;
+  purchase_date?: string | null;
+  supplier?: string | null;
   notes?: string | null;
   created_by?: string | null;
   created_at?: string;

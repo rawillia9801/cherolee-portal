@@ -295,6 +295,9 @@ export async function adjustInventoryQuantity(input: {
   reason?: "Gifted" | "Kept" | "Damaged" | "Other" | "Manual add" | "Added by scan";
   source?: string;
   scan?: boolean;
+  unitCost?: number;
+  supplier?: string;
+  purchaseDate?: string;
 }) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -313,19 +316,41 @@ export async function adjustInventoryQuantity(input: {
     .from("inventory_items")
     .update({
       quantity_on_hand: nextQuantity,
+      unit_cost: input.unitCost !== undefined && input.unitCost >= 0 ? input.unitCost : input.item.unit_cost,
+      supplier: input.supplier?.trim() || input.item.supplier || null,
+      needs_cost: input.unitCost !== undefined ? !Number(input.unitCost) : input.item.needs_cost,
       last_scanned_at: input.scan ? new Date().toISOString() : input.item.last_scanned_at ?? null,
     })
     .eq("id", input.item.id);
   if (updateResponse.error) throw formatSupabaseError("Updating inventory quantity", updateResponse.error);
 
-  const movementResponse = await supabase.from("inventory_movements").insert({
+  const movementPayload = {
     inventory_item_id: input.item.id,
     movement_type: input.direction === "add" ? (input.scan ? "scan_add" : "manual_add") : input.scan ? "scan_remove" : "manual_remove",
     quantity_change: quantityChange,
     reason: input.direction === "add" ? input.reason || (input.scan ? "Added by scan" : "Manual add") : input.reason,
     source: input.source || (input.scan ? "Barcode Scan" : "Admin"),
+    purchase_date: input.purchaseDate || null,
+    supplier: input.supplier?.trim() || null,
+    notes: input.direction === "add" && input.purchaseDate ? `Purchased ${input.purchaseDate}` : null,
     created_by: "Admin",
-  });
+  };
+  const movementResponse = await supabase.from("inventory_movements").insert(movementPayload);
+  if (movementResponse.error && /inventory_movements|schema cache|purchase_date|supplier|column|does not exist/i.test(movementResponse.error.message ?? "")) {
+    const fallbackResponse = await supabase.from("inventory_movements").insert({
+      inventory_item_id: movementPayload.inventory_item_id,
+      movement_type: movementPayload.movement_type,
+      quantity_change: movementPayload.quantity_change,
+      reason: movementPayload.reason,
+      source: movementPayload.source,
+      notes: [movementPayload.notes, input.supplier ? `Supplier: ${input.supplier}` : ""].filter(Boolean).join(" | ") || null,
+      created_by: movementPayload.created_by,
+    });
+    if (fallbackResponse.error && !/inventory_movements|does not exist|schema cache/i.test(fallbackResponse.error.message ?? "")) {
+      throw formatSupabaseError("Recording inventory movement", fallbackResponse.error);
+    }
+    return;
+  }
   if (movementResponse.error) throw formatSupabaseError("Recording inventory movement", movementResponse.error);
 }
 

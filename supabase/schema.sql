@@ -139,10 +139,15 @@ create table if not exists public.inventory_movements (
   source_order_number text,
   source_po_number text,
   settlement_import_id uuid references public.imports(id) on delete set null,
+  purchase_date date,
+  supplier text,
   notes text,
   created_by text,
   created_at timestamptz not null default now()
 );
+
+alter table public.inventory_movements add column if not exists purchase_date date;
+alter table public.inventory_movements add column if not exists supplier text;
 
 drop trigger if exists inventory_items_updated_at on public.inventory_items;
 create trigger inventory_items_updated_at
