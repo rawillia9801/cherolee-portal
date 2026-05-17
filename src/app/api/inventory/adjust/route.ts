@@ -29,7 +29,13 @@ export async function POST(request: Request) {
       purchaseDate: body.purchaseDate,
     });
 
-    return Response.json({ ok: true });
+    const updatedResponse = await supabase.from("inventory_items").select("*").eq("id", itemId).single();
+    if (updatedResponse.error) {
+      console.error("[api/inventory/adjust] reload failed", updatedResponse.error);
+      return Response.json({ error: updatedResponse.error.message }, { status: 500 });
+    }
+
+    return Response.json({ ok: true, item: updatedResponse.data });
   } catch (error) {
     console.error("[api/inventory/adjust] failed", error);
     return Response.json({ error: error instanceof Error ? error.message : "Inventory adjustment failed." }, { status: 500 });

@@ -331,7 +331,7 @@ export async function updateInventoryItem(id: string, patch: Partial<InventoryIt
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "Updating inventory item failed.");
-    return;
+    return payload.item as InventoryItem | undefined;
   }
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -379,7 +379,7 @@ export async function adjustInventoryQuantity(input: {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "Inventory adjustment failed.");
-    return;
+    return payload.item as InventoryItem | undefined;
   }
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");

@@ -237,7 +237,10 @@ export default function Home() {
       return;
     }
     try {
-      await updateInventoryItem(item.id, { unit_cost: unitCost });
+      const updated = await updateInventoryItem(item.id, { unit_cost: unitCost });
+      if (updated) {
+        setInventory((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      }
       await refresh();
       setMessage(`Updated Cost Each for ${item.product_name}.`);
     } catch (error) {
@@ -548,28 +551,7 @@ function ImportView(props: {
     { key: "status", label: "Status" },
   ];
   const transactionRows = props.preview?.batch?.length ? props.preview.batch[0]?.transactions ?? [] : props.preview?.transactions ?? [];
-  const itemGroups = props.preview?.batch?.reduce((groups, parsed) => {
-    const key = `${parsed.order.product_name || "Unknown item"}-${parsed.order.upc || "missing"}`;
-    const current = groups.get(key) ?? {
-      item: parsed.order.product_name || "Unknown item",
-      upc: parsed.order.upc || "-",
-      orders: 0,
-      quantity: 0,
-      sales: 0,
-      shipping: 0,
-      lines: 0,
-      needsReview: false,
-    };
-    current.orders += 1;
-    current.quantity += Number(parsed.order.quantity || 0);
-    current.sales += Number(parsed.order.subtotal || 0);
-    current.shipping += Number(parsed.order.shipping_cost || 0);
-    current.lines += parsed.transactions.length;
-    current.needsReview = current.needsReview || !parsed.order.subtotal || !parsed.order.upc || !parsed.order.product_name;
-    groups.set(key, current);
-    return groups;
-  }, new Map<string, { item: string; upc: string; orders: number; quantity: number; sales: number; shipping: number; lines: number; needsReview: boolean }>()) ?? new Map();
-  const itemGroupRows = [...itemGroups.values()].sort((left, right) => right.sales - left.sales);
+  const batchRows = props.preview?.batch ?? [];
 
   return (
     <section className="import-layout">
@@ -601,24 +583,27 @@ function ImportView(props: {
           {props.preview.batch?.length ? (
             <div className="batch-preview">
               <div className="batch-summary">
-                <strong>{itemGroupRows.length} item groups from {props.preview.batch.length} orders ready to import</strong>
-                <span>Items are summarized by item name/GTIN. Saving still creates the underlying order groups with matching sale, commission, shipping, WFS, refund, and adjustment lines.</span>
+                <strong>{batchRows.length} order / transaction groups ready to import</strong>
+                <span>Rows are grouped by the best available Walmart order data. If Excel only copied rounded scientific IDs, the app uses transaction event plus item name/GTIN so separate sales do not collapse together.</span>
               </div>
               <table>
-                <thead><tr><th>Item name</th><th>UPC / GTIN</th><th>Orders</th><th>Qty</th><th>Sales</th><th>Shipping</th><th>Lines</th><th>Status</th></tr></thead>
+                <thead><tr><th>PO / Order group</th><th>Item name</th><th>UPC / GTIN</th><th>Qty</th><th>Sales</th><th>Shipping</th><th>Lines</th><th>Status</th></tr></thead>
                 <tbody>
-                  {itemGroupRows.map((group) => (
-                    <tr key={`${group.item}-${group.upc}`}>
-                      <td>{group.item}</td>
-                      <td>{group.upc}</td>
-                      <td>{group.orders}</td>
-                      <td>{group.quantity}</td>
-                      <td>{currency(group.sales)}</td>
-                      <td>{currency(group.shipping)}</td>
-                      <td>{group.lines}</td>
-                      <td><span className={statusClass(group.needsReview ? "Needs Cost" : "Parsed")}>{group.needsReview ? "Needs review" : "Ready"}</span></td>
+                  {batchRows.map((parsed) => {
+                    const needsReview = !parsed.order.subtotal || !parsed.order.upc || !parsed.order.product_name;
+                    return (
+                    <tr key={parsed.order.po_number}>
+                      <td>{parsed.order.po_number}</td>
+                      <td>{parsed.order.product_name}</td>
+                      <td>{parsed.order.upc || "-"}</td>
+                      <td>{parsed.order.quantity}</td>
+                      <td>{currency(parsed.order.subtotal)}</td>
+                      <td>{currency(parsed.order.shipping_cost)}</td>
+                      <td>{parsed.transactions.length}</td>
+                      <td><span className={statusClass(needsReview ? "Needs Cost" : "Parsed")}>{needsReview ? "Needs review" : "Ready"}</span></td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1036,7 +1021,7 @@ function InventoryView({
         return;
       }
       const reason = direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason);
-      await adjustInventoryQuantity({
+      const updated = await adjustInventoryQuantity({
         item,
         quantity,
         direction,
@@ -1046,6 +1031,10 @@ function InventoryView({
         supplier: direction === "add" ? purchaseSource : undefined,
         purchaseDate: direction === "add" ? purchaseDate : undefined,
       });
+      if (updated) {
+        setInventory((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+        setSelectedItemId(updated.id);
+      }
       await refresh();
       setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
     } catch (error) {
