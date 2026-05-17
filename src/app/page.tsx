@@ -62,7 +62,7 @@ import {
   profitTrend,
   salesByItem,
 } from "@/lib/calculations";
-import { demoInventory, demoMovements, demoOrders, sampleOrderPaste } from "@/lib/demo-data";
+import { demoInventory, demoMovements, demoOrders } from "@/lib/demo-data";
 import { parseWalmartImport } from "@/lib/parser";
 import {
   deleteOrderRecord,
@@ -110,7 +110,7 @@ export default function Home() {
   const [movements, setMovements] = useState<InventoryMovement[]>(demoMovements);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [orderText, setOrderText] = useState(sampleOrderPaste);
+  const [orderText, setOrderText] = useState("");
   const [transactionText, setTransactionText] = useState("");
   const [preview, setPreview] = useState<ParsedImport | null>(null);
   const [saving, setSaving] = useState(false);
