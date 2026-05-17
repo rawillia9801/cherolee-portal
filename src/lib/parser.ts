@@ -127,7 +127,11 @@ function headerIndex(headers: string[], candidates: string[]) {
     if (exact >= 0) return exact;
   }
   for (const candidate of candidates.map(normalizeHeader)) {
-    const partial = normalized.findIndex((header) => header.includes(candidate) || candidate.includes(header));
+    const partial = normalized.findIndex((header) => {
+      if (!header || header.length < 4) return false;
+      if (/line/.test(header) && !/line/.test(candidate)) return false;
+      return header.includes(candidate);
+    });
     if (partial >= 0) return partial;
   }
   return -1;
@@ -161,17 +165,18 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
   if (headerLineIndex < 0) return [];
 
   const headers = delimitedCells(rawLines[headerLineIndex]);
+  if (headers.length < 8) return [];
   const indexes = {
     type: headerIndex(headers, ["Transaction Type"]),
     description: headerIndex(headers, ["Transaction Description"]),
     customerOrder: headerIndex(headers, ["Customer Order #", "Customer Order"]),
-    purchaseOrder: headerIndex(headers, ["Purchase Order", "PO Number", "PO #"]),
+    purchaseOrder: headerIndex(headers, ["Purchase Order #", "Purchase Order", "PO Number", "PO #"]),
     amount: headerIndex(headers, ["Amount"]),
     amountType: headerIndex(headers, ["Amount Type"]),
     quantity: headerIndex(headers, ["Ship Qty", "Quantity", "Qty"]),
-    itemId: headerIndex(headers, ["Partner Item ID", "Item ID", "Product ID", "Partner GTIN"]),
-    upc: headerIndex(headers, ["UPC", "GTIN", "Product ID", "Partner Item ID", "Partner GTIN"]),
-    productName: headerIndex(headers, ["Product Name", "Product Title", "Item Name", "Item Description"]),
+    itemId: headerIndex(headers, ["Partner Item Id", "Partner Item ID", "Item ID"]),
+    upc: headerIndex(headers, ["Partner GTIN", "UPC", "GTIN"]),
+    productName: headerIndex(headers, ["Partner Item Name", "Product Name", "Product Title", "Item Name", "Item Description"]),
     status: headerIndex(headers, ["Transaction Status", "Status"]),
     date: headerIndex(headers, ["Transaction Date", "Date"]),
   };
@@ -514,6 +519,7 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
 
   const text = compact(transactionText);
   if (!text) return [];
+  if (looksLikeSettlementRows(text)) return [];
   const lines = normalizeTransactionRows(text);
   const parsed = lines.map((line) => parseTransactionLine(line, fallbackPo)).filter(Boolean) as ParsedTransaction[];
 
@@ -542,6 +548,16 @@ function isSettlementReportPaste(text: string) {
     /amount\s*type/i.test(text);
 }
 
+function looksLikeSettlementRows(text: string) {
+  return /commission on product|product tax withheld|walmart shipping label|wfs fulfillment|product price/i.test(text) &&
+    /\d{4}_\d{2}_\d{2}|[12]\.\d+E\+\d+/i.test(text);
+}
+
+function hasDelimitedSettlementHeader(text: string) {
+  const header = text.replace(/\r/g, "\n").split("\n").find((line) => /transaction\s*type/i.test(line) && /amount/i.test(line));
+  return Boolean(header && delimitedCells(header).length >= 8);
+}
+
 export function parseWalmartImport(orderText: string, transactionText: string): ParsedImport {
   const orderBoxHasSettlementReport = isSettlementReportPaste(orderText);
   const effectiveOrderText = orderBoxHasSettlementReport ? "" : orderText;
@@ -565,6 +581,9 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
 
   if (orderBoxHasSettlementReport) {
     warnings.push("Detected a Walmart settlement report in the order-details box and parsed it as transaction data.");
+  }
+  if (looksLikeSettlementRows(effectiveTransactionText) && !hasDelimitedSettlementHeader(effectiveTransactionText) && !transactions.length) {
+    warnings.push("Settlement rows were detected, but the paste is missing usable spreadsheet columns. Copy the full report rows including the header row from Excel/Sheets so item name, GTIN, order number, amount, and fee columns stay separated.");
   }
   if (derived && derived.groupCount > 1) {
     warnings.push(
