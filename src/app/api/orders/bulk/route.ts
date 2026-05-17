@@ -1,5 +1,14 @@
 import { getSupabaseClient } from "@/lib/supabase";
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const typed = error as { message?: string; code?: string; details?: string; hint?: string };
+    return [typed.code, typed.message, typed.details, typed.hint].filter(Boolean).join(". ") || JSON.stringify(error);
+  }
+  return "Deleting all orders failed.";
+}
+
 export async function DELETE() {
   try {
     const supabase = getSupabaseClient();
@@ -44,6 +53,6 @@ export async function DELETE() {
     return Response.json({ ok: true, deleted: orders.length });
   } catch (error) {
     console.error("[api/orders/bulk DELETE] failed", error);
-    return Response.json({ error: error instanceof Error ? error.message : "Deleting all orders failed." }, { status: 500 });
+    return Response.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
