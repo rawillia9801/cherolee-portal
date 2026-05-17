@@ -535,9 +535,21 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
   ];
 }
 
+function isSettlementReportPaste(text: string) {
+  return /transaction\s*type/i.test(text) &&
+    /transaction\s*description/i.test(text) &&
+    /purchase\s*order/i.test(text) &&
+    /amount\s*type/i.test(text);
+}
+
 export function parseWalmartImport(orderText: string, transactionText: string): ParsedImport {
-  let order = parseOrderDetails(orderText);
-  const transactions = parseTransactions(transactionText, order.po_number);
+  const orderBoxHasSettlementReport = isSettlementReportPaste(orderText);
+  const effectiveOrderText = orderBoxHasSettlementReport ? "" : orderText;
+  const effectiveTransactionText =
+    transactionText.trim() || (orderBoxHasSettlementReport ? orderText : "");
+
+  let order = parseOrderDetails(effectiveOrderText);
+  const transactions = parseTransactions(effectiveTransactionText, order.po_number);
   const derived = transactions.length ? orderFromTransactionReport(transactions) : null;
   if (derived) {
     order = mergeDerivedOrder(order, derived.order);
@@ -547,10 +559,13 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
     .reduce((sum, transaction) => sum + Math.abs(transaction.net_payable), 0);
   const warnings: string[] = [];
   const batch =
-    derived && derived.groupCount > 1 && !orderText.trim()
-      ? importsFromTransactionReport(transactions, transactionText)
+    derived && derived.groupCount > 1 && !effectiveOrderText.trim()
+      ? importsFromTransactionReport(transactions, effectiveTransactionText)
       : undefined;
 
+  if (orderBoxHasSettlementReport) {
+    warnings.push("Detected a Walmart settlement report in the order-details box and parsed it as transaction data.");
+  }
   if (derived && derived.groupCount > 1) {
     warnings.push(
       batch
@@ -578,5 +593,12 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
     });
   }
 
-  return { order, transactions, warnings, raw_order_text: orderText, raw_transaction_text: transactionText, batch };
+  return {
+    order,
+    transactions,
+    warnings,
+    raw_order_text: effectiveOrderText,
+    raw_transaction_text: effectiveTransactionText,
+    batch,
+  };
 }
