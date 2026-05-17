@@ -848,8 +848,10 @@ function InventoryView({
   const [removeQty, setRemoveQty] = useState(1);
   const [typeFilter, setTypeFilter] = useState("All");
   const [stockRange, setStockRange] = useState("30 Days");
+  const [missingLookup, setMissingLookup] = useState("");
+  const [newItemName, setNewItemName] = useState("");
 
-  const selectedItem = inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
+  const selectedItem = missingLookup ? null : inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
   const searchResults = query.trim() ? inventory.filter((item) => itemMatches(item, query)) : [];
   const itemMovements = selectedItem ? movements.filter((movement) => movement.inventory_item_id === selectedItem.id) : [];
@@ -899,8 +901,12 @@ function InventoryView({
   }, [{ date: "Start", qty: Math.max(0, Number(selectedItem?.quantity_on_hand || 0) - itemMovements.reduce((sum, movement) => sum + Number(movement.quantity_change || 0), 0)) }]).slice(stockRange === "7 Days" ? -7 : stockRange === "90 Days" || stockRange === "All Time" ? undefined : -30);
 
   const selectFirstMatch = async (raw: string, mode = scanMode) => {
-    const matches = inventory.filter((item) => itemMatches(item, raw));
+    const lookup = normalizeLookup(raw);
+    if (!lookup) return;
+    const matches = inventory.filter((item) => itemMatches(item, lookup));
     if (matches.length === 1) {
+      setMissingLookup("");
+      setNewItemName("");
       setSelectedItemId(matches[0].id);
       if (mode === "add") await adjustItem(matches[0], "add", 1, true);
       if (mode === "remove") await adjustItem(matches[0], "remove", 1, true);
@@ -908,10 +914,14 @@ function InventoryView({
       return;
     }
     if (matches.length > 1) {
+      setMissingLookup("");
       setMessage(`${matches.length} matching inventory items found. Choose one from the results.`);
       return;
     }
-    setMessage("Item not found. Create Inventory Item is available below the search results.");
+    setMissingLookup(lookup);
+    setNewItemName("");
+    setSelectedItemId("");
+    setMessage(`Item not found for UPC ${lookup}. Create the inventory item first.`);
   };
 
   const adjustItem = async (item: InventoryItem, direction: "add" | "remove", quantity: number, scan = false) => {
@@ -951,14 +961,15 @@ function InventoryView({
   };
 
   const createMissingItem = async () => {
-    if (!query.trim()) return;
+    const lookup = missingLookup || normalizeLookup(query);
+    if (!lookup) return;
     if (!configured) {
       const now = new Date().toISOString();
       const created: InventoryItem = {
         id: `demo-inv-${Date.now()}`,
-        upc: normalizeLookup(query),
-        partner_gtin: normalizeLookup(query),
-        product_name: `New item ${normalizeLookup(query)}`,
+        upc: lookup,
+        partner_gtin: lookup,
+        product_name: newItemName.trim() || `New item ${lookup}`,
         marketplace: "Walmart",
         quantity_on_hand: 0,
         unit_cost: 0,
@@ -971,17 +982,62 @@ function InventoryView({
       };
       setInventory((current) => [created, ...current]);
       setSelectedItemId(created.id);
+      setMissingLookup("");
+      setNewItemName("");
+      setQuery(lookup);
       setMessage("Created demo inventory item. Supabase is required for persistence.");
       return;
     }
-    const created = await createInventoryItem({ upc: query });
+    const created = await createInventoryItem({ upc: lookup, product_name: newItemName });
     await refresh();
     setSelectedItemId(created.id);
+    setMissingLookup("");
+    setNewItemName("");
+    setQuery(created.upc);
     setMessage(`Created inventory item for ${created.upc}.`);
   };
 
   if (!selectedItem || !selectedStats) {
-    return <section className="inventory-empty">No inventory items yet. Search or scan a UPC, then create the item.</section>;
+    return (
+      <div className="inventory-control-page">
+        <section className="inventory-toolbar">
+          <div className="scan-search">
+            <Search size={18} />
+            <input
+              value={query}
+              placeholder="Search by name or scan/type UPC"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void selectFirstMatch(query);
+              }}
+            />
+            <Barcode size={20} />
+          </div>
+          <button className={clsx("scan-mode-button add", scanMode === "add" && "active")} onClick={() => setScanMode("add")}>
+            <Plus size={18} /><span>Add Inventory<small>Adds 1 per scan</small></span>
+          </button>
+          <button className={clsx("scan-mode-button remove", scanMode === "remove" && "active")} onClick={() => setScanMode("remove")}>
+            <Minus size={18} /><span>Remove Inventory<small>Requires reason if not a sale</small></span>
+          </button>
+          <button className={clsx("scan-mode-button scan", scanMode === "scan" && "active")} onClick={() => setScanMode("scan")}>
+            <Barcode size={18} /><span>Scan Item<small>View item details</small></span>
+          </button>
+        </section>
+        <section className="missing-item-card">
+          <div className="product-image"><Barcode size={34} /></div>
+          <div>
+            <span>Item not found</span>
+            <h2>{missingLookup || normalizeLookup(query) || "New scanned item"}</h2>
+            <p>Create this UPC/GTIN before adding or removing inventory. The item will be marked Needs Cost until you add unit cost.</p>
+          </div>
+          <label>
+            Product name
+            <input value={newItemName} placeholder="Optional product name" onChange={(event) => setNewItemName(event.target.value)} />
+          </label>
+          <button className="export-button" onClick={createMissingItem}><Plus size={15} /> Create Inventory Item</button>
+        </section>
+      </div>
+    );
   }
 
   return (
@@ -1020,7 +1076,7 @@ function InventoryView({
       {query.trim() && (
         <section className="search-results-card">
           <strong>{searchResults.length ? "Matching Results" : "Item not found"}</strong>
-          {searchResults.map((item) => <button key={item.id} onClick={() => setSelectedItemId(item.id)}>{item.product_name}<span>{item.upc}</span></button>)}
+          {searchResults.map((item) => <button key={item.id} onClick={() => { setMissingLookup(""); setSelectedItemId(item.id); }}>{item.product_name}<span>{item.upc}</span></button>)}
           {!searchResults.length && <button className="export-button" onClick={createMissingItem}><Plus size={15} /> Create Inventory Item</button>}
         </section>
       )}

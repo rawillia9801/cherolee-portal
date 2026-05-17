@@ -1154,11 +1154,57 @@ th {
 }
 
 .inventory-helper-note,
-.inventory-empty {
+.inventory-empty,
+.missing-item-card {
   padding: 14px 16px;
   color: #4d3bc2;
   background: #f2f0ff;
   font-size: 13px;
+}
+
+.missing-item-card {
+  display: grid;
+  grid-template-columns: 76px minmax(260px, 1fr) minmax(260px, .8fr) auto;
+  align-items: center;
+  gap: 18px;
+  color: #101828;
+  background: #fff;
+  border: 1px solid #e3e7f0;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgb(18 29 63 / 5%);
+}
+
+.missing-item-card span,
+.missing-item-card label {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.missing-item-card h2 {
+  margin: 4px 0 6px;
+  font-size: 24px;
+}
+
+.missing-item-card p {
+  margin: 0;
+  color: #667085;
+}
+
+.missing-item-card input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid #dce2ef;
+  border-radius: 6px;
+  outline: 0;
+}
+
+.missing-item-card input:focus {
+  border-color: #7668ff;
+  box-shadow: 0 0 0 3px rgb(112 103 255 / 12%);
 }
 
 @media (max-width: 1200px) {
