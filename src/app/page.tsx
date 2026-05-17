@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Archive,
   BarChart3,
+  Barcode,
   Boxes,
   CalendarDays,
   CheckCircle2,
@@ -14,8 +15,11 @@ import {
   Download,
   Edit3,
   Home as HomeIcon,
+  ImageIcon,
   Menu,
+  Minus,
   PackagePlus,
+  Plus,
   ReceiptText,
   RefreshCw,
   Search,
@@ -26,7 +30,7 @@ import {
   Users,
   WalletCards,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -42,6 +46,7 @@ import {
   YAxis,
 } from "recharts";
 import { clsx } from "clsx";
+import Image from "next/image";
 import {
   currency,
   dashboardMetrics,
@@ -57,10 +62,12 @@ import {
   profitTrend,
   salesByItem,
 } from "@/lib/calculations";
-import { demoInventory, demoOrders, sampleOrderPaste } from "@/lib/demo-data";
+import { demoInventory, demoMovements, demoOrders, sampleOrderPaste } from "@/lib/demo-data";
 import { parseWalmartImport } from "@/lib/parser";
 import {
   deleteOrderRecord,
+  adjustInventoryQuantity,
+  createInventoryItem,
   isSupabaseConfigured,
   loadDashboardData,
   saveParsedImport,
@@ -68,11 +75,11 @@ import {
   updateOrderRecord,
   type OrderEditInput,
 } from "@/lib/supabase";
-import type { InventoryItem, OrderView, ParsedImport, ParsedOrder } from "@/lib/types";
+import type { InventoryItem, InventoryMovement, OrderView, ParsedImport, ParsedOrder } from "@/lib/types";
 
 const views = [
   { id: "dashboard", label: "Dashboard", icon: HomeIcon },
-  { id: "import", label: "Paste Import", icon: ClipboardPaste },
+  { id: "import", label: "Settlement Import", icon: ClipboardPaste },
   { id: "orders", label: "Orders / Sales", icon: ShoppingBag },
   { id: "inventory", label: "Inventory", icon: Boxes },
   { id: "reports", label: "Reports", icon: BarChart3 },
@@ -100,6 +107,7 @@ export default function Home() {
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
   const [orders, setOrders] = useState<OrderView[]>(demoOrders);
   const [inventory, setInventory] = useState<InventoryItem[]>(demoInventory);
+  const [movements, setMovements] = useState<InventoryMovement[]>(demoMovements);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [orderText, setOrderText] = useState(sampleOrderPaste);
@@ -111,6 +119,7 @@ export default function Home() {
     if (!configured) {
       setOrders(demoOrders);
       setInventory(demoInventory);
+      setMovements(demoMovements);
       setLoading(false);
       return;
     }
@@ -119,6 +128,7 @@ export default function Home() {
       const data = await loadDashboardData();
       setOrders(data.orders);
       setInventory(data.inventory);
+      setMovements(data.movements);
       setMessage("");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load Supabase data.");
@@ -138,6 +148,7 @@ export default function Home() {
         if (cancelled) return;
         setOrders(data.orders);
         setInventory(data.inventory);
+        setMovements(data.movements);
         setMessage("");
       } catch (error) {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "Could not load Supabase data.");
@@ -312,18 +323,22 @@ export default function Home() {
         <div className="sidebar-block">
           <p>Quick actions</p>
           <button className="quick-action" onClick={() => setActiveView("import")}>
-            <ClipboardPaste size={16} />
-            Paste New Order
-          </button>
-          <button className="quick-action" onClick={() => setActiveView("inventory")}>
             <PackagePlus size={16} />
             Add Inventory Item
+          </button>
+          <button className="quick-action" onClick={() => setActiveView("inventory")}>
+            <ClipboardPaste size={16} />
+            Import Inventory
+          </button>
+          <button className="quick-action" onClick={() => setActiveView("reports")}>
+            <Download size={16} />
+            Export Inventory
           </button>
         </div>
 
         <div className="sidebar-block">
           <p>Alerts</p>
-          <div className="alert-row"><AlertTriangle size={15} /> Items needing cost <strong>{metrics.needsCost}</strong></div>
+          <div className="alert-row"><AlertTriangle size={15} /> Needs attention <strong>{metrics.needsCost}</strong></div>
           <div className="alert-row red"><AlertTriangle size={15} /> Low stock items <strong>{metrics.lowStock}</strong></div>
           <div className="alert-row blue"><RefreshCw size={15} /> Pending transactions <strong>{metrics.pendingTransactions}</strong></div>
         </div>
@@ -342,13 +357,13 @@ export default function Home() {
         <header className="topbar">
           <div>
             <h1>{mainTitle === "Dashboard" ? "Dashboard Overview" : mainTitle}</h1>
-            <p>Track Walmart sales, fees, costs and profit.</p>
+            <p>{activeView === "inventory" ? "Search, scan, add, remove, and review item performance." : "Track Walmart sales, fees, costs and profit."}</p>
           </div>
           <div className="top-actions">
             {!configured && <span className="demo-pill"><Database size={14} /> Demo Mode</span>}
             <button className="filter-button"><CalendarDays size={15} /> May 1 - May 15, 2026</button>
             <button className="filter-button">Compare</button>
-            <button className="export-button"><Download size={15} /> Export Report</button>
+            <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : "Export Report"}</button>
           </div>
         </header>
 
@@ -384,7 +399,19 @@ export default function Home() {
         {activeView === "orders" && (
           <OrdersView orders={orders} inventory={inventory} onEditOrder={editOrder} onDeleteOrder={deleteOrder} />
         )}
-        {activeView === "inventory" && <InventoryView inventory={inventory} orders={orders} updateCost={updateCost} />}
+        {activeView === "inventory" && (
+          <InventoryView
+            configured={configured}
+            inventory={inventory}
+            orders={orders}
+            movements={movements}
+            updateCost={updateCost}
+            refresh={refresh}
+            setInventory={setInventory}
+            setMovements={setMovements}
+            setMessage={setMessage}
+          />
+        )}
         {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
         {activeView === "settings" && <SettingsView configured={configured} />}
       </main>
@@ -747,103 +774,355 @@ function inventoryStats(item: InventoryItem, orders: OrderView[], inventory: Inv
   };
 }
 
+type ScanMode = "scan" | "add" | "remove";
+type RemoveReason = "Gifted" | "Kept" | "Damaged" | "Other";
+
+function normalizeLookup(value: string) {
+  const trimmed = value.trim().replace(/[\s-]/g, "");
+  if (!/[eE]\+/.test(trimmed)) return trimmed.toLowerCase();
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed.toLocaleString("en-US", { maximumFractionDigits: 0, useGrouping: false }).toLowerCase() : trimmed.toLowerCase();
+}
+
+function itemMatches(item: InventoryItem, query: string) {
+  const lookup = normalizeLookup(query);
+  const haystack = [
+    item.product_name,
+    item.upc,
+    item.sku,
+    item.partner_item_id,
+    item.partner_gtin,
+    item.walmart_item_id,
+  ].filter(Boolean).map((value) => normalizeLookup(String(value)));
+  return haystack.some((value) => value.includes(lookup));
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function itemStatus(item: InventoryItem) {
+  if (item.needs_cost || !Number(item.unit_cost)) return "Needs Cost";
+  if (item.quantity_on_hand <= 0) return "Out of Stock";
+  if (item.quantity_on_hand <= item.reorder_point) return "Low Stock";
+  return "In Stock";
+}
+
+function feeSplit(order: OrderView) {
+  const commission = order.fees
+    .filter((fee) => /commission|service|referral|walmart/i.test(fee.fee_type) && !/wfs/i.test(fee.fee_type))
+    .reduce((sum, fee) => sum + Math.abs(Number(fee.amount || 0)), 0);
+  const wfs = order.fees.filter((fee) => /wfs|fulfillment|storage|inventory/i.test(fee.fee_type)).reduce((sum, fee) => sum + Math.abs(Number(fee.amount || 0)), 0);
+  return { commission, wfs, shipping: orderShipping(order), other: Math.max(0, orderFees(order) - commission - wfs) };
+}
+
 function InventoryView({
+  configured,
   inventory,
   orders,
+  movements,
   updateCost,
+  refresh,
+  setInventory,
+  setMovements,
+  setMessage,
 }: {
+  configured: boolean;
   inventory: InventoryItem[];
   orders: OrderView[];
+  movements: InventoryMovement[];
   updateCost: (item: InventoryItem, value: string) => void;
+  refresh: () => Promise<void>;
+  setInventory: Dispatch<SetStateAction<InventoryItem[]>>;
+  setMovements: Dispatch<SetStateAction<InventoryMovement[]>>;
+  setMessage: Dispatch<SetStateAction<string>>;
 }) {
-  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState(inventory[0]?.id ?? "");
+  const [query, setQuery] = useState("");
+  const [scanMode, setScanMode] = useState<ScanMode>("scan");
+  const [removeReason, setRemoveReason] = useState<RemoveReason | "">("");
+  const [addQty, setAddQty] = useState(1);
+  const [removeQty, setRemoveQty] = useState(1);
+  const [typeFilter, setTypeFilter] = useState("All");
+  const [stockRange, setStockRange] = useState("30 Days");
+
+  const selectedItem = inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
+  const searchResults = query.trim() ? inventory.filter((item) => itemMatches(item, query)) : [];
+  const itemMovements = selectedItem ? movements.filter((movement) => movement.inventory_item_id === selectedItem.id) : [];
+  const itemOrders = selectedItem && selectedStats ? selectedStats.rows : [];
+  const feeTotals = itemOrders.reduce(
+    (totals, row) => {
+      const split = feeSplit(row.order);
+      return {
+        commission: totals.commission + split.commission,
+        wfs: totals.wfs + split.wfs,
+        shipping: totals.shipping + split.shipping,
+        other: totals.other + split.other,
+      };
+    },
+    { commission: 0, wfs: 0, shipping: 0, other: 0 },
+  );
+  const transactionRows = itemOrders.flatMap((row) => {
+    const split = feeSplit(row.order);
+    const base = {
+      date: row.order.order_date || row.order.created_at || "",
+      orderNumber: row.order.walmart_order_number || "-",
+      po: row.order.po_number,
+      qty: row.item.quantity,
+      unitPrice: row.item.unit_price,
+      commission: split.commission,
+      shipping: split.shipping,
+      wfs: split.wfs,
+      refund: row.refundTotal,
+      profit: row.profit,
+      status: row.order.status || "Shipped",
+    };
+    const lines = [{ ...base, type: "Sale" }];
+    for (const refund of row.refunds) {
+      lines.push({ ...base, date: refund.transaction_date || base.date, type: /return/i.test(refund.transaction_type) ? "Return" : "Refund", qty: -Math.abs(Number(refund.quantity || 1)), unitPrice: 0, commission: 0, shipping: 0, wfs: 0, refund: Math.abs(Number(refund.net_payable || 0)), profit: -Math.abs(Number(refund.net_payable || 0)), status: "Refunded" });
+    }
+    return lines;
+  }).filter((row) => typeFilter === "All" || row.type === typeFilter);
+  const qtySold = selectedStats?.unitsSold ?? 0;
+  const returns = itemOrders.reduce((sum, row) => sum + row.refunds.reduce((count, transaction) => count + Math.abs(Number(transaction.quantity || 1)), 0), 0);
+  const avgSellingPrice = qtySold ? (selectedStats?.gross ?? 0) / qtySold : 0;
+  const profitMargin = selectedStats?.gross ? ((selectedStats.profit / selectedStats.gross) * 100) : 0;
+  const sellThrough = qtySold + Number(selectedItem?.quantity_on_hand || 0) ? (qtySold / (qtySold + Number(selectedItem?.quantity_on_hand || 0))) * 100 : 0;
+  const stockTrend = [...itemMovements].reverse().reduce<{ date: string; qty: number }[]>((rows, movement) => {
+    const previous = rows.at(-1)?.qty ?? Number(selectedItem?.quantity_on_hand || 0);
+    rows.push({ date: movement.created_at?.slice(5, 10) || "Now", qty: Math.max(0, previous + Number(movement.quantity_change || 0)) });
+    return rows;
+  }, [{ date: "Start", qty: Math.max(0, Number(selectedItem?.quantity_on_hand || 0) - itemMovements.reduce((sum, movement) => sum + Number(movement.quantity_change || 0), 0)) }]).slice(stockRange === "7 Days" ? -7 : stockRange === "90 Days" || stockRange === "All Time" ? undefined : -30);
+
+  const selectFirstMatch = async (raw: string, mode = scanMode) => {
+    const matches = inventory.filter((item) => itemMatches(item, raw));
+    if (matches.length === 1) {
+      setSelectedItemId(matches[0].id);
+      if (mode === "add") await adjustItem(matches[0], "add", 1, true);
+      if (mode === "remove") await adjustItem(matches[0], "remove", 1, true);
+      if (mode === "scan") setMessage(`Opened ${matches[0].product_name}.`);
+      return;
+    }
+    if (matches.length > 1) {
+      setMessage(`${matches.length} matching inventory items found. Choose one from the results.`);
+      return;
+    }
+    setMessage("Item not found. Create Inventory Item is available below the search results.");
+  };
+
+  const adjustItem = async (item: InventoryItem, direction: "add" | "remove", quantity: number, scan = false) => {
+    if (direction === "remove" && !removeReason) {
+      setMessage("Please select a removal reason.");
+      return;
+    }
+    if (!configured) {
+      const quantityChange = direction === "add" ? quantity : -quantity;
+      setInventory((current) =>
+        current.map((candidate) =>
+          candidate.id === item.id
+            ? { ...candidate, quantity_on_hand: Math.max(0, candidate.quantity_on_hand + quantityChange), last_scanned_at: scan ? new Date().toISOString() : candidate.last_scanned_at }
+            : candidate,
+        ),
+      );
+      setMovements((current) => [
+        {
+          id: `demo-movement-${Date.now()}`,
+          inventory_item_id: item.id,
+          movement_type: direction === "add" ? (scan ? "scan_add" : "manual_add") : scan ? "scan_remove" : "manual_remove",
+          quantity_change: quantityChange,
+          reason: direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason),
+          source: scan ? "Barcode Scan" : "Admin",
+          created_by: "Admin",
+          created_at: new Date().toISOString(),
+        },
+        ...current,
+      ]);
+      setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+      return;
+    }
+    const reason = direction === "add" ? (scan ? "Added by scan" : "Manual add") : (removeReason as RemoveReason);
+    await adjustInventoryQuantity({ item, quantity, direction, reason, scan });
+    await refresh();
+    setMessage(direction === "add" ? `Added ${quantity} unit${quantity === 1 ? "" : "s"} to inventory.` : `Removed ${quantity} unit${quantity === 1 ? "" : "s"} from inventory.`);
+  };
+
+  const createMissingItem = async () => {
+    if (!query.trim()) return;
+    if (!configured) {
+      const now = new Date().toISOString();
+      const created: InventoryItem = {
+        id: `demo-inv-${Date.now()}`,
+        upc: normalizeLookup(query),
+        partner_gtin: normalizeLookup(query),
+        product_name: `New item ${normalizeLookup(query)}`,
+        marketplace: "Walmart",
+        quantity_on_hand: 0,
+        unit_cost: 0,
+        reorder_point: 0,
+        needs_cost: true,
+        fulfillment_type: "Seller Fulfilled",
+        created_at: now,
+        updated_at: now,
+        last_scanned_at: now,
+      };
+      setInventory((current) => [created, ...current]);
+      setSelectedItemId(created.id);
+      setMessage("Created demo inventory item. Supabase is required for persistence.");
+      return;
+    }
+    const created = await createInventoryItem({ upc: query });
+    await refresh();
+    setSelectedItemId(created.id);
+    setMessage(`Created inventory item for ${created.upc}.`);
+  };
+
+  if (!selectedItem || !selectedStats) {
+    return <section className="inventory-empty">No inventory items yet. Search or scan a UPC, then create the item.</section>;
+  }
 
   return (
-    <div className="page-stack">
-      <section className="table-card full">
-        <div className="card-heading"><h2>Inventory</h2><button className="tiny-button">Add Item</button></div>
-        <table>
-          <thead><tr><th>UPC</th><th>Item</th><th>SKU</th><th>On Hand</th><th>Unit Cost</th><th>Units Sold</th><th>Profit</th><th>Reorder</th><th>Supplier</th><th>Status</th></tr></thead>
-          <tbody>
-            {inventory.map((item) => {
-              const stats = inventoryStats(item, orders, inventory);
-              return (
-                <tr key={item.id} className="clickable-row" onClick={() => setSelectedItem(item)}>
-                  <td>{item.upc}</td>
-                  <td>{item.product_name}</td>
-                  <td>{item.sku || "-"}</td>
-                  <td>{item.quantity_on_hand}</td>
-                  <td>
-                    <input
-                      className="cost-input"
-                      defaultValue={item.unit_cost}
-                      onClick={(event) => event.stopPropagation()}
-                      onBlur={(event) => updateCost(item, event.target.value)}
-                    />
-                  </td>
-                  <td>{stats.unitsSold}</td>
-                  <td className={stats.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(stats.profit)}</td>
-                  <td>{item.reorder_point}</td>
-                  <td>{item.supplier || "-"}</td>
-                  <td><span className={statusClass(item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock")}>{item.needs_cost ? "Needs Cost" : item.quantity_on_hand <= item.reorder_point ? "Low Stock" : "In Stock"}</span></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <div className="inventory-control-page">
+      <section className="inventory-toolbar">
+        <div className="scan-search">
+          <Search size={18} />
+          <input
+            value={query}
+            placeholder="Search by name or scan/type UPC"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void selectFirstMatch(query);
+            }}
+          />
+          <Barcode size={20} />
+        </div>
+        <button className={clsx("scan-mode-button add", scanMode === "add" && "active")} onClick={() => setScanMode("add")}>
+          <Plus size={18} /><span>Add Inventory<small>Adds 1 per scan</small></span>
+        </button>
+        <button className={clsx("scan-mode-button remove", scanMode === "remove" && "active")} onClick={() => setScanMode("remove")}>
+          <Minus size={18} /><span>Remove Inventory<small>Requires reason if not a sale</small></span>
+        </button>
+        <button className={clsx("scan-mode-button scan", scanMode === "scan" && "active")} onClick={() => setScanMode("scan")}>
+          <Barcode size={18} /><span>Scan Item<small>View item details</small></span>
+        </button>
+        {scanMode === "remove" && (
+          <div className="remove-reason-card">
+            <strong>Remove Reason</strong>
+            <span>(when not from a sale)</span>
+            <div>{(["Gifted", "Kept", "Damaged", "Other"] as RemoveReason[]).map((reason) => <button className={clsx(removeReason === reason && "active")} key={reason} onClick={() => setRemoveReason(reason)}>{reason}</button>)}</div>
+          </div>
+        )}
       </section>
 
-      {selectedItem && selectedStats && (
-        <section className="item-summary-card">
-          <div className="card-heading">
-            <div>
-              <h2>{selectedItem.product_name}</h2>
-              <span>UPC {selectedItem.upc}</span>
-            </div>
-            <button className="tiny-button" onClick={() => setSelectedItem(null)}>Close</button>
-          </div>
-
-          <div className="item-summary-grid">
-            <ReportCard title="Units Sold" value={String(selectedStats.unitsSold)} detail="Across saved orders" />
-            <ReportCard title="Seller Proceeds" value={currency(selectedStats.gross)} detail="Before commission, shipping, COGS" />
-            <ReportCard title="Total Profit" value={currency(selectedStats.profit)} detail="Proceeds - fees - shipping - COGS - refunds" />
-            <ReportCard title="Refunds" value={currency(selectedStats.refunds)} detail="Refund transactions found" />
-          </div>
-
-          <div className="formula item-formula">
-            <strong>Profit formula for this item</strong>
-            <span>{currency(selectedStats.profit)} = {currency(selectedStats.gross)} - {currency(selectedStats.fees)} fees - {currency(selectedStats.shipping)} shipping - {currency(selectedStats.cogs)} COGS - {currency(selectedStats.refunds)} refunds</span>
-          </div>
-
-          <div className="table-card embedded">
-            <div className="card-heading"><h2>Orders and Refunds</h2></div>
-            <table>
-              <thead><tr><th>PO / Order</th><th>Date</th><th>Customer</th><th>Qty</th><th>Proceeds</th><th>Fees</th><th>Shipping</th><th>COGS</th><th>Refunds</th><th>Profit</th><th>Status</th></tr></thead>
-              <tbody>
-                {selectedStats.rows.map((row) => (
-                  <tr key={`${row.order.id}-${row.item.id}`}>
-                    <td>{row.order.po_number}</td>
-                    <td>{row.order.order_date || "-"}</td>
-                    <td>{row.order.customer_name || "-"}</td>
-                    <td>{row.item.quantity}</td>
-                    <td>{currency(row.itemGross)}</td>
-                    <td>{currency(row.fees)}</td>
-                    <td>{currency(row.shipping)}</td>
-                    <td>{currency(row.cogs)}</td>
-                    <td>{currency(row.refundTotal)}</td>
-                    <td className={row.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(row.profit)}</td>
-                    <td><span className={statusClass(row.refundTotal ? "Refund" : row.order.status)}>{row.refundTotal ? "Refund" : row.order.status || "Parsed"}</span></td>
-                  </tr>
-                ))}
-                {!selectedStats.rows.length && (
-                  <tr><td colSpan={11}>No saved orders or refunds found for this UPC yet.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+      {query.trim() && (
+        <section className="search-results-card">
+          <strong>{searchResults.length ? "Matching Results" : "Item not found"}</strong>
+          {searchResults.map((item) => <button key={item.id} onClick={() => setSelectedItemId(item.id)}>{item.product_name}<span>{item.upc}</span></button>)}
+          {!searchResults.length && <button className="export-button" onClick={createMissingItem}><Plus size={15} /> Create Inventory Item</button>}
         </section>
       )}
+
+      <section className="selected-item-card">
+        <div className="product-image">{selectedItem.product_image_url ? <Image src={selectedItem.product_image_url} alt="" width={76} height={76} unoptimized /> : <ImageIcon size={34} />}</div>
+        <div className="selected-item-title"><h2>{selectedItem.product_name}</h2><span>UPC <button title="Copy UPC" onClick={() => navigator.clipboard.writeText(selectedItem.upc)}>{selectedItem.upc}</button></span></div>
+        <div><span>SKU / Partner Item ID</span><strong>{selectedItem.sku || selectedItem.partner_item_id || selectedItem.walmart_item_id || "-"}</strong></div>
+        <div><span>Fulfillment</span><strong>{selectedItem.fulfillment_type || "Seller Fulfilled"}</strong></div>
+        <div><span>Location / City</span><strong>{selectedItem.location || "-"}</strong></div>
+        <div><span>Last Scanned</span><strong>{formatDateTime(selectedItem.last_scanned_at)}</strong></div>
+        <div><span>Status</span><strong><span className={statusClass(itemStatus(selectedItem))}>{itemStatus(selectedItem)}</span></strong></div>
+      </section>
+
+      <section className="item-kpi-row">
+        <ReportCard title="Qty On Hand" value={String(selectedItem.quantity_on_hand)} detail="Updated just now" />
+        <section className="report-card editable-cost"><span>Cost Each</span><input defaultValue={selectedItem.unit_cost} onBlur={(event) => updateCost(selectedItem, event.target.value)} /><p>Avg landed cost</p></section>
+        <ReportCard title="Total Cost" value={currency(selectedItem.quantity_on_hand * selectedItem.unit_cost)} detail="Qty On Hand x Cost Each" />
+        <ReportCard title="Qty Sold" value={String(qtySold)} detail="All time" />
+        <ReportCard title="Returns" value={String(returns)} detail="All time" />
+        <ReportCard title="Sales" value={currency(selectedStats.gross)} detail="All time revenue" />
+        <ReportCard title="Profit" value={currency(selectedStats.profit)} detail="All time profit" />
+      </section>
+
+      <div className="inventory-detail-grid">
+        <div className="inventory-main-column">
+          <section className="inventory-panel product-summary-panel">
+            <div className="card-heading"><h2>Product Summary</h2><select value={stockRange} onChange={(event) => setStockRange(event.target.value)}><option>7 Days</option><option>30 Days</option><option>90 Days</option><option>All Time</option></select></div>
+            <div className="product-summary-grid">
+              <div className="product-image large">{selectedItem.product_image_url ? <Image src={selectedItem.product_image_url} alt="" width={92} height={112} unoptimized /> : <ImageIcon size={42} />}</div>
+              <div className="product-facts">
+                <span>Brand <strong>{selectedItem.brand || "-"}</strong></span>
+                <span>Category <strong>{selectedItem.category || "-"}</strong></span>
+                <span>Marketplace ID <strong>{selectedItem.walmart_item_id || selectedItem.partner_item_id || "-"}</strong></span>
+                <span>Created <strong>{formatDateTime(selectedItem.created_at)}</strong></span>
+                <span>Supplier <strong>{selectedItem.supplier || "-"}</strong></span>
+                <span>Notes <strong>{selectedItem.notes || "-"}</strong></span>
+              </div>
+              <div className="stock-trend">
+                <strong>Stock Trend (Qty On Hand)</strong>
+                <ResponsiveContainer width="100%" height={150}>
+                  <AreaChart data={stockTrend}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Area type="monotone" dataKey="qty" stroke="#7067ff" fill="#7067ff22" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="quantity-controls">
+              <div><button onClick={() => setAddQty(Math.max(1, addQty - 1))}><Minus size={15} /></button><label>Add Qty<input type="number" value={addQty} onChange={(event) => setAddQty(Math.max(1, Number(event.target.value)))} /></label><button onClick={() => setAddQty(addQty + 1)}><Plus size={15} /></button><small>Adds to inventory per scan</small><button className="export-button" onClick={() => adjustItem(selectedItem, "add", addQty)}>Add Qty</button></div>
+              <div><button onClick={() => setRemoveQty(Math.max(1, removeQty - 1))}><Minus size={15} /></button><label>Remove Qty<input type="number" value={removeQty} onChange={(event) => setRemoveQty(Math.max(1, Number(event.target.value)))} /></label><button onClick={() => setRemoveQty(removeQty + 1)}><Plus size={15} /></button><small>Decreases inventory. Reason required if not from sale.</small><button className="danger-button" onClick={() => adjustItem(selectedItem, "remove", removeQty)}>Remove Qty</button></div>
+            </div>
+          </section>
+
+          <section className="inventory-panel performance-panel">
+            <div className="card-heading"><h2>Sales & Performance</h2></div>
+            <div className="performance-metrics">
+              <ReportCard title="Revenue" value={currency(selectedStats.gross)} detail="Tax ignored" />
+              <ReportCard title="Profit" value={currency(selectedStats.profit)} detail="After fees, shipping, COGS, returns" />
+              <ReportCard title="Sell-Through" value={percent(sellThrough)} detail="Units sold vs stock handled" />
+              <ReportCard title="Avg Selling Price" value={currency(avgSellingPrice)} detail="Gross sales / units sold" />
+              <ReportCard title="Avg Profit Margin" value={percent(profitMargin)} detail="Profit / gross sales" />
+              <ReportCard title="Total Fees" value={currency(selectedStats.fees)} detail="Commission, WFS, other fees" />
+              <ReportCard title="Total COGS" value={currency(selectedStats.cogs)} detail="Current unit cost basis" />
+            </div>
+            <div className="breakdown-row">
+              <strong>Performance Breakdown</strong>
+              <ResponsiveContainer width="100%" height={190}>
+                <PieChart><Pie data={[{ name: "WFS fees", value: feeTotals.wfs }, { name: "Referral fees / commission", value: feeTotals.commission }, { name: "Shipping label", value: feeTotals.shipping }, { name: "Other fees", value: feeTotals.other }]} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72}>{pieColors.map((color) => <Cell key={color} fill={color} />)}</Pie><Tooltip formatter={(value) => currency(Number(value))} /></PieChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+
+          <section className="inventory-panel history-panel">
+            <div className="card-heading"><h2>Order & Transaction History (Line-by-Line)</h2><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>All</option><option>Sale</option><option>Refund</option><option>Return</option><option>Fee</option></select></div>
+            <table><thead><tr><th>Date</th><th>Order #</th><th>PO #</th><th>Type</th><th>Qty</th><th>Unit Price</th><th>Commission</th><th>Shipping Label</th><th>WFS Fee</th><th>Refund</th><th>Profit</th><th>Status</th></tr></thead><tbody>
+              {transactionRows.slice(0, 8).map((row, index) => <tr key={`${row.po}-${row.type}-${index}`}><td>{row.date}</td><td>{row.orderNumber}</td><td>{row.po}</td><td><span className={statusClass(row.type)}>{row.type}</span></td><td>{row.qty}</td><td>{row.unitPrice ? currency(row.unitPrice) : "-"}</td><td>{row.commission ? currency(row.commission) : "-"}</td><td>{row.shipping ? currency(row.shipping) : "-"}</td><td>{row.wfs ? currency(row.wfs) : "-"}</td><td>{row.refund ? currency(row.refund) : "-"}</td><td className={row.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(row.profit)}</td><td><span className={statusClass(row.status)}>{row.status}</span></td></tr>)}
+              {!transactionRows.length && <tr><td colSpan={12}>No sales, refunds, returns, or fee lines found for this item yet.</td></tr>}
+            </tbody></table>
+            <div className="table-footer">Showing 1 to {Math.min(8, transactionRows.length)} of {transactionRows.length} transactions <button>View all transactions</button></div>
+          </section>
+
+          <section className="inventory-panel movement-panel">
+            <div className="card-heading"><h2>Inventory Movement History</h2></div>
+            <table><thead><tr><th>Date</th><th>Action</th><th>Qty Change</th><th>Reason</th><th>User / Source</th></tr></thead><tbody>
+              {itemMovements.slice(0, 8).map((movement) => <tr key={movement.id}><td>{formatDateTime(movement.created_at)}</td><td>{movement.movement_type.replace(/_/g, " ")}</td><td className={movement.quantity_change >= 0 ? "profit-positive" : "profit-negative"}>{movement.quantity_change > 0 ? "+" : ""}{movement.quantity_change}</td><td>{movement.reason}</td><td>{movement.source || movement.created_by || "Admin"}</td></tr>)}
+              {!itemMovements.length && <tr><td colSpan={5}>No inventory movement history yet.</td></tr>}
+            </tbody></table>
+            <div className="table-footer">Showing 1 to {Math.min(8, itemMovements.length)} of {itemMovements.length} movements <button>View all movements</button></div>
+          </section>
+        </div>
+
+        <aside className="inventory-side-column">
+          <section className="inventory-panel health-card"><h2>Inventory Health</h2><div className={clsx("health-warning", itemStatus(selectedItem) !== "In Stock" && "active")}><AlertTriangle size={18} /><strong>{itemStatus(selectedItem) === "In Stock" ? "Healthy Stock" : `${itemStatus(selectedItem)} Warning`}</strong><p>{selectedItem.quantity_on_hand <= selectedItem.reorder_point ? "This item is getting low. Consider restocking soon." : "Inventory is currently healthy."}</p><hr /><span>Reorder Recommendation:</span><strong>25-30 units</strong><p>to maintain healthy stock</p></div></section>
+          <section className="inventory-panel profitability-card"><h2>Item Profitability</h2><div className="report-line"><span>Profit per Unit</span><strong>{currency(qtySold ? selectedStats.profit / qtySold : 0)}</strong></div><div className="report-line"><span>Profit Margin</span><strong>{percent(profitMargin)}</strong></div><button className="link-button">View full profitability report</button></section>
+          <section className="inventory-panel activity-card"><h2>Item Activity</h2><div className="report-line"><span>Last Scanned</span><strong>{formatDateTime(selectedItem.last_scanned_at)}</strong></div><div className="report-line"><span>Last Manual Update</span><strong>{formatDateTime(itemMovements.find((movement) => /manual|correction/i.test(movement.movement_type))?.created_at)}</strong></div><div className="report-line"><span>First Added</span><strong>{formatDateTime(selectedItem.created_at)}</strong></div><div className="report-line"><span>Last Sold</span><strong>{formatDateTime(itemOrders[0]?.order.order_date)}</strong></div><div className="report-line"><span>Last Returned</span><strong>{formatDateTime(transactionRows.find((row) => /refund|return/i.test(row.type))?.date)}</strong></div></section>
+        </aside>
+      </div>
+      <div className="inventory-helper-note">How it works: Add Inventory increases quantity by 1 for each scan. Remove Inventory decreases quantity by 1 and requires a reason when not tied to a sale. Scan Item opens the item detail view.</div>
     </div>
   );
 }

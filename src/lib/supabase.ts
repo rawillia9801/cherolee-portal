@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { InventoryItem, OrderView, ParsedImport } from "./types";
+import type { DashboardData, InventoryItem, InventoryMovement, OrderView, ParsedImport } from "./types";
 
 let client: SupabaseClient | null = null;
 
@@ -47,21 +47,25 @@ export async function loadDashboardData() {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const [ordersResponse, inventoryResponse] = await Promise.all([
+  const [ordersResponse, inventoryResponse, movementsResponse] = await Promise.all([
     supabase
       .from("orders")
       .select("*, items:order_items(*), fees:order_fees(*), shipments(*), transactions(*)")
       .order("order_date", { ascending: false }),
     supabase.from("inventory_items").select("*").order("product_name", { ascending: true }),
+    supabase.from("inventory_movements").select("*").order("created_at", { ascending: false }),
   ]);
 
   if (ordersResponse.error) throw ordersResponse.error;
   if (inventoryResponse.error) throw inventoryResponse.error;
+  const missingMovementsTable = movementsResponse.error && /inventory_movements|does not exist|schema cache/i.test(movementsResponse.error.message ?? "");
+  if (movementsResponse.error && !missingMovementsTable) throw movementsResponse.error;
 
   return {
     orders: (ordersResponse.data ?? []) as OrderView[],
     inventory: (inventoryResponse.data ?? []) as InventoryItem[],
-  };
+    movements: (missingMovementsTable ? [] : movementsResponse.data ?? []) as InventoryMovement[],
+  } satisfies DashboardData;
 }
 
 export async function saveParsedImport(parsed: ParsedImport) {
@@ -103,12 +107,16 @@ export async function saveParsedImport(parsed: ParsedImport) {
       transactions.find((transaction) => transaction.item_id)?.item_id ||
       existingInventory?.walmart_item_id ||
       null,
+    partner_item_id: existingInventory?.partner_item_id || transactions.find((transaction) => transaction.item_id)?.item_id || null,
+    partner_gtin: existingInventory?.partner_gtin || order.upc || null,
+    fulfillment_type: existingInventory?.fulfillment_type || "Seller Fulfilled",
     needs_cost: !Number(existingInventory?.unit_cost),
     quantity_on_hand: existingInventory?.quantity_on_hand ?? 0,
     unit_cost: existingInventory?.unit_cost ?? 0,
     reorder_point: existingInventory?.reorder_point ?? 0,
     sku: existingInventory?.sku ?? null,
     supplier: existingInventory?.supplier ?? null,
+    location: existingInventory?.location ?? null,
     notes: existingInventory?.notes ?? null,
   };
 
@@ -231,7 +239,7 @@ export async function saveParsedImport(parsed: ParsedImport) {
       raw_text: [parsed.raw_order_text, parsed.raw_transaction_text].filter(Boolean).join("\n\n--- transactions ---\n\n"),
       parsed_json: parsed,
     },
-  ]);
+  ]).select("id").single();
   if (importInsert.error) throw formatSupabaseError("Recording import log", importInsert.error);
 
   const quantityDelta = order.quantity - previousQuantity;
@@ -244,6 +252,19 @@ export async function saveParsedImport(parsed: ParsedImport) {
       })
       .eq("id", inventoryItem.id);
     if (quantityUpdate.error) throw formatSupabaseError("Deducting inventory quantity", quantityUpdate.error);
+    const movementInsert = await supabase.from("inventory_movements").insert({
+      inventory_item_id: inventoryItem.id,
+      movement_type: quantityDelta > 0 ? "sale_deduction" : "correction",
+      quantity_change: -quantityDelta,
+      reason: quantityDelta > 0 ? "Sale" : "Correction",
+      source: "Settlement Import",
+      source_order_id: savedOrder.id,
+      source_order_number: order.walmart_order_number || null,
+      source_po_number: poNumber,
+      settlement_import_id: importInsert.data?.id ?? null,
+      created_by: "System",
+    });
+    if (movementInsert.error) throw formatSupabaseError("Recording inventory movement", movementInsert.error);
   }
 
   return savedOrder.id as string;
@@ -258,6 +279,83 @@ export async function updateInventoryItem(id: string, patch: Partial<InventoryIt
   };
   const response = await supabase.from("inventory_items").update(nextPatch).eq("id", id);
   if (response.error) throw formatSupabaseError("Updating inventory item", response.error);
+}
+
+function normalizeLookup(value: string) {
+  const trimmed = value.trim().replace(/[\s-]/g, "");
+  if (!/[eE]\+/.test(trimmed)) return trimmed;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed.toLocaleString("en-US", { maximumFractionDigits: 0, useGrouping: false }) : trimmed;
+}
+
+export async function adjustInventoryQuantity(input: {
+  item: InventoryItem;
+  quantity: number;
+  direction: "add" | "remove";
+  reason?: "Gifted" | "Kept" | "Damaged" | "Other" | "Manual add" | "Added by scan";
+  source?: string;
+  scan?: boolean;
+}) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+
+  const quantity = Math.max(1, Math.round(input.quantity || 1));
+  if (input.direction === "remove" && !input.reason) {
+    throw new Error("Please select a removal reason.");
+  }
+
+  const currentQuantity = Number(input.item.quantity_on_hand || 0);
+  const quantityChange = input.direction === "add" ? quantity : -quantity;
+  const nextQuantity = currentQuantity + quantityChange;
+  if (nextQuantity < 0) throw new Error("Inventory cannot go below zero.");
+
+  const updateResponse = await supabase
+    .from("inventory_items")
+    .update({
+      quantity_on_hand: nextQuantity,
+      last_scanned_at: input.scan ? new Date().toISOString() : input.item.last_scanned_at ?? null,
+    })
+    .eq("id", input.item.id);
+  if (updateResponse.error) throw formatSupabaseError("Updating inventory quantity", updateResponse.error);
+
+  const movementResponse = await supabase.from("inventory_movements").insert({
+    inventory_item_id: input.item.id,
+    movement_type: input.direction === "add" ? (input.scan ? "scan_add" : "manual_add") : input.scan ? "scan_remove" : "manual_remove",
+    quantity_change: quantityChange,
+    reason: input.direction === "add" ? input.reason || (input.scan ? "Added by scan" : "Manual add") : input.reason,
+    source: input.source || (input.scan ? "Barcode Scan" : "Admin"),
+    created_by: "Admin",
+  });
+  if (movementResponse.error) throw formatSupabaseError("Recording inventory movement", movementResponse.error);
+}
+
+export async function createInventoryItem(input: { upc: string; product_name?: string }) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const upc = normalizeLookup(input.upc);
+  assertRequired(upc, "UPC");
+
+  const response = await supabase
+    .from("inventory_items")
+    .upsert(
+      {
+        upc,
+        partner_gtin: upc,
+        product_name: input.product_name?.trim() || `New item ${upc}`,
+        marketplace: "Walmart",
+        quantity_on_hand: 0,
+        unit_cost: 0,
+        reorder_point: 0,
+        needs_cost: true,
+        fulfillment_type: "Seller Fulfilled",
+        last_scanned_at: new Date().toISOString(),
+      },
+      { onConflict: "upc" },
+    )
+    .select("*")
+    .single();
+  if (response.error) throw formatSupabaseError("Creating inventory item", response.error);
+  return response.data as InventoryItem;
 }
 
 export type OrderEditInput = {
@@ -308,12 +406,25 @@ async function ensureInventoryItem(supabase: SupabaseClient, input: OrderEditInp
   return response.data as InventoryItem;
 }
 
-async function setInventoryQuantity(supabase: SupabaseClient, inventoryId: string, quantity: number, action: string) {
+async function setInventoryQuantity(
+  supabase: SupabaseClient,
+  inventoryId: string,
+  quantity: number,
+  action: string,
+  movement?: Omit<InventoryMovement, "id" | "created_at" | "inventory_item_id">,
+) {
   const response = await supabase
     .from("inventory_items")
     .update({ quantity_on_hand: Math.max(0, Math.round(quantity)) })
     .eq("id", inventoryId);
   if (response.error) throw formatSupabaseError(action, response.error);
+  if (movement && movement.quantity_change) {
+    const movementResponse = await supabase.from("inventory_movements").insert({
+      ...movement,
+      inventory_item_id: inventoryId,
+    });
+    if (movementResponse.error) throw formatSupabaseError("Recording inventory movement", movementResponse.error);
+  }
 }
 
 export async function updateOrderRecord(order: OrderView, input: OrderEditInput) {
@@ -395,7 +506,16 @@ export async function updateOrderRecord(order: OrderView, input: OrderEditInput)
 
   if (oldUpc === input.upc && oldInventory?.data) {
     const nextQuantity = Number(oldInventory.data.quantity_on_hand || 0) + oldQuantity - newQuantity;
-    await setInventoryQuantity(supabase, oldInventory.data.id, nextQuantity, "Adjusting inventory for edited quantity");
+    await setInventoryQuantity(supabase, oldInventory.data.id, nextQuantity, "Adjusting inventory for edited quantity", {
+      movement_type: "correction",
+      quantity_change: oldQuantity - newQuantity,
+      reason: "Correction",
+      source: "Admin",
+      source_order_id: order.id,
+      source_order_number: input.walmart_order_number || null,
+      source_po_number: input.po_number,
+      created_by: "Admin",
+    });
   } else {
     if (oldInventory?.data) {
       await setInventoryQuantity(
@@ -403,6 +523,16 @@ export async function updateOrderRecord(order: OrderView, input: OrderEditInput)
         oldInventory.data.id,
         Number(oldInventory.data.quantity_on_hand || 0) + oldQuantity,
         "Restoring old inventory item after UPC edit",
+        {
+          movement_type: "correction",
+          quantity_change: oldQuantity,
+          reason: "Correction",
+          source: "Admin",
+          source_order_id: order.id,
+          source_order_number: order.walmart_order_number || null,
+          source_po_number: order.po_number,
+          created_by: "Admin",
+        },
       );
     }
     await setInventoryQuantity(
@@ -410,6 +540,16 @@ export async function updateOrderRecord(order: OrderView, input: OrderEditInput)
       newInventory.id,
       Number(newInventory.quantity_on_hand || 0) - newQuantity,
       "Deducting new inventory item after UPC edit",
+      {
+        movement_type: "sale_deduction",
+        quantity_change: -newQuantity,
+        reason: "Sale",
+        source: "Admin",
+        source_order_id: order.id,
+        source_order_number: input.walmart_order_number || null,
+        source_po_number: input.po_number,
+        created_by: "Admin",
+      },
     );
   }
 }
@@ -432,6 +572,16 @@ export async function deleteOrderRecord(order: OrderView) {
         inventoryResponse.data.id,
         Number(inventoryResponse.data.quantity_on_hand || 0) + Number(item.quantity || 0),
         "Restoring inventory after order delete",
+        {
+          movement_type: "correction",
+          quantity_change: Number(item.quantity || 0),
+          reason: "Correction",
+          source: "Admin",
+          source_order_id: order.id,
+          source_order_number: order.walmart_order_number || null,
+          source_po_number: order.po_number,
+          created_by: "Admin",
+        },
       );
     }
   }

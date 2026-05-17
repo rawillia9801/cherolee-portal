@@ -2,7 +2,15 @@ export type InventoryItem = {
   id: string;
   upc: string;
   sku?: string | null;
+  partner_item_id?: string | null;
+  partner_gtin?: string | null;
   product_name: string;
+  product_image_url?: string | null;
+  brand?: string | null;
+  category?: string | null;
+  product_type?: string | null;
+  contract_category?: string | null;
+  fulfillment_type?: string | null;
   marketplace?: string | null;
   walmart_item_id?: string | null;
   quantity_on_hand: number;
@@ -10,9 +18,27 @@ export type InventoryItem = {
   reorder_point: number;
   needs_cost: boolean;
   supplier?: string | null;
+  location?: string | null;
   notes?: string | null;
+  last_scanned_at?: string | null;
   created_at?: string;
   updated_at?: string;
+};
+
+export type InventoryMovement = {
+  id: string;
+  inventory_item_id: string;
+  movement_type: "scan_add" | "manual_add" | "scan_remove" | "manual_remove" | "sale_deduction" | "return_restock" | "refund_adjustment" | "correction";
+  quantity_change: number;
+  reason: "Added by scan" | "Manual add" | "Sale" | "Gifted" | "Kept" | "Damaged" | "Other" | "Return restock" | "Correction" | "Settlement import";
+  source: string;
+  source_order_id?: string | null;
+  source_order_number?: string | null;
+  source_po_number?: string | null;
+  settlement_import_id?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
 };
 
 export type Order = {
@@ -141,4 +167,10 @@ export type OrderView = Order & {
   fees: OrderFee[];
   shipments: Shipment[];
   transactions: Transaction[];
+};
+
+export type DashboardData = {
+  orders: OrderView[];
+  inventory: InventoryItem[];
+  movements: InventoryMovement[];
 };
