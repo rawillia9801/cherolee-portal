@@ -538,6 +538,7 @@ function ImportView(props: {
     { key: "customer_name", label: "Customer" },
     { key: "status", label: "Status" },
   ];
+  const transactionRows = props.preview?.batch?.length ? props.preview.batch[0]?.transactions ?? [] : props.preview?.transactions ?? [];
 
   return (
     <section className="import-layout">
@@ -562,28 +563,58 @@ function ImportView(props: {
 
       {props.preview && (
         <div className="preview-card">
-          <div className="card-heading"><h2>Editable Parse Preview</h2><span>Duplicate detection: PO number</span></div>
-          <div className="preview-grid">
-            {fields.map((field) => (
-              <label key={field.key}>
-                <span>{field.label}</span>
-                <input
-                  type={field.type ?? "text"}
-                  value={inputValue(props.preview?.order[field.key])}
-                  onChange={(event) => props.updatePreviewOrder(field.key, event.target.value)}
-                />
-              </label>
-            ))}
+          <div className="card-heading">
+            <h2>{props.preview.batch?.length ? "Settlement Report Preview" : "Editable Parse Preview"}</h2>
+            <span>Duplicate detection: PO number</span>
           </div>
+          {props.preview.batch?.length ? (
+            <div className="batch-preview">
+              <div className="batch-summary">
+                <strong>{props.preview.batch.length} order groups ready to import</strong>
+                <span>Each row will be saved as its own order group with its matching sale, commission, shipping, WFS, refund, and adjustment lines.</span>
+              </div>
+              <table>
+                <thead><tr><th>PO / Order</th><th>Item</th><th>UPC / GTIN</th><th>Qty</th><th>Sales</th><th>Shipping</th><th>Lines</th><th>Status</th></tr></thead>
+                <tbody>
+                  {props.preview.batch.map((parsed) => (
+                    <tr key={parsed.order.po_number}>
+                      <td>{parsed.order.po_number}</td>
+                      <td>{parsed.order.product_name}</td>
+                      <td>{parsed.order.upc || "-"}</td>
+                      <td>{parsed.order.quantity}</td>
+                      <td>{currency(parsed.order.subtotal)}</td>
+                      <td>{currency(parsed.order.shipping_cost)}</td>
+                      <td>{parsed.transactions.length}</td>
+                      <td><span className={statusClass(parsed.order.subtotal ? "Parsed" : "Needs Cost")}>{parsed.order.subtotal ? "Ready" : "Needs review"}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="preview-grid">
+              {fields.map((field) => (
+                <label key={field.key}>
+                  <span>{field.label}</span>
+                  <input
+                    type={field.type ?? "text"}
+                    value={inputValue(props.preview?.order[field.key])}
+                    onChange={(event) => props.updatePreviewOrder(field.key, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
           <div className="transaction-preview">
-            <h3>Transactions</h3>
-            {props.preview.transactions.map((transaction, index) => (
+            <h3>{props.preview.batch?.length ? `Transactions for first order group (${props.preview.batch[0]?.order.po_number})` : "Transactions"}</h3>
+            {transactionRows.map((transaction, index) => (
               <div key={`${transaction.transaction_type}-${index}`}>
                 <span>{transaction.transaction_type}</span>
                 <strong>{currency(transaction.net_payable)}</strong>
                 <em>{transaction.status || "Parsed"}</em>
               </div>
             ))}
+            {!transactionRows.length && <p>No transaction lines found for this preview.</p>}
           </div>
         </div>
       )}

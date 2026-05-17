@@ -645,6 +645,38 @@ th {
   font-size: 13px;
 }
 
+.batch-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.batch-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  color: #4632b9;
+  background: #f2f0ff;
+  border: 1px solid #ddd8ff;
+  border-radius: 8px;
+}
+
+.batch-summary strong,
+.batch-summary span {
+  display: block;
+}
+
+.batch-summary strong {
+  color: #2f246d;
+  font-size: 16px;
+}
+
+.batch-summary span {
+  color: #667085;
+  font-size: 13px;
+}
+
 .page-stack {
   display: grid;
   gap: 16px;
