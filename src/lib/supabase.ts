@@ -40,13 +40,9 @@ export function isSupabaseConfigured() {
 export function getSupabaseClient() {
   if (!isSupabaseConfigured()) return null;
   if (!client) {
-    const key =
-      typeof window === "undefined"
-        ? process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        : process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
     client = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      key,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       { auth: { persistSession: false } },
     );
   }
