@@ -24,6 +24,12 @@ export function orderShipping(order: OrderView) {
   return order.shipments.reduce((sum, shipment) => sum + Number(shipment.shipping_cost || 0), 0);
 }
 
+export function orderRefunds(order: OrderView) {
+  return order.transactions
+    .filter((transaction) => /refund|return/i.test(transaction.transaction_type || transaction.status || ""))
+    .reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
+}
+
 export function orderCogs(order: OrderView, inventory: InventoryItem[]) {
   return order.items.reduce((sum, item) => {
     const currentCost = inventory.find((inventoryItem) => inventoryItem.upc === item.upc)?.unit_cost;
@@ -33,7 +39,7 @@ export function orderCogs(order: OrderView, inventory: InventoryItem[]) {
 }
 
 export function orderProfit(order: OrderView, inventory: InventoryItem[]) {
-  return orderGross(order) - orderFees(order) - orderShipping(order) - orderCogs(order, inventory);
+  return orderGross(order) - orderFees(order) - orderShipping(order) - orderCogs(order, inventory) - orderRefunds(order);
 }
 
 export function orderMargin(order: OrderView, inventory: InventoryItem[]) {

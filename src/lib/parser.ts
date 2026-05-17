@@ -86,6 +86,118 @@ function findFirst(text: string, regex: RegExp, fallback = "") {
   return text.match(regex)?.[1]?.trim() ?? fallback;
 }
 
+function normalizeIdentifier(value?: string) {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!/[eE]\+/.test(trimmed)) return trimmed.replace(/\.0+$/, "");
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return trimmed;
+  return parsed.toLocaleString("en-US", { maximumFractionDigits: 0, useGrouping: false });
+}
+
+function normalizeHeader(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function delimitedCells(line: string) {
+  if (line.includes("\t")) return line.split("\t").map((cell) => cell.trim());
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const char of line) {
+    if (char === "\"") {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function headerIndex(headers: string[], candidates: string[]) {
+  const normalized = headers.map(normalizeHeader);
+  for (const candidate of candidates.map(normalizeHeader)) {
+    const exact = normalized.findIndex((header) => header === candidate);
+    if (exact >= 0) return exact;
+  }
+  for (const candidate of candidates.map(normalizeHeader)) {
+    const partial = normalized.findIndex((header) => header.includes(candidate) || candidate.includes(header));
+    if (partial >= 0) return partial;
+  }
+  return -1;
+}
+
+function cell(row: string[], index: number) {
+  return index >= 0 ? row[index]?.trim() ?? "" : "";
+}
+
+function transactionKind(type: string, description: string, amountType: string) {
+  const joined = `${type} ${description} ${amountType}`;
+  if (/refund|return/i.test(joined)) return "Refund";
+  if (/shipping label/i.test(joined)) return "Shipping Label";
+  if (/commission/i.test(joined)) return "Walmart Service Fee";
+  if (/service fee|storagefee|inventory|reserve|wfs|fee/i.test(joined)) return type || amountType || "Service Fee";
+  if (/sale|purchase|product/i.test(joined)) return "Sale";
+  return type || amountType || "Transaction";
+}
+
+function parseTransactionReport(transactionText: string, fallbackPo: string): ParsedTransaction[] {
+  const rawLines = transactionText.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const headerLineIndex = rawLines.findIndex((line) => /transaction\s*type/i.test(line) && /amount/i.test(line));
+  if (headerLineIndex < 0) return [];
+
+  const headers = delimitedCells(rawLines[headerLineIndex]);
+  const indexes = {
+    type: headerIndex(headers, ["Transaction Type"]),
+    description: headerIndex(headers, ["Transaction Description"]),
+    customerOrder: headerIndex(headers, ["Customer Order #", "Customer Order"]),
+    purchaseOrder: headerIndex(headers, ["Purchase Order", "PO Number", "PO #"]),
+    amount: headerIndex(headers, ["Amount"]),
+    amountType: headerIndex(headers, ["Amount Type"]),
+    quantity: headerIndex(headers, ["Ship Qty", "Quantity", "Qty"]),
+    itemId: headerIndex(headers, ["Partner Item ID", "Item ID", "Product ID", "Product"]),
+    status: headerIndex(headers, ["Transaction Status", "Status"]),
+    date: headerIndex(headers, ["Transaction Date", "Date"]),
+  };
+
+  return rawLines
+    .slice(headerLineIndex + 1)
+    .map((line) => ({ line, row: delimitedCells(line) }))
+    .filter(({ row }) => row.some(Boolean))
+    .map(({ line, row }) => {
+      const type = cell(row, indexes.type);
+      const description = cell(row, indexes.description);
+      const amountType = cell(row, indexes.amountType);
+      const amount = toNumber(cell(row, indexes.amount));
+      const po =
+        normalizeIdentifier(cell(row, indexes.purchaseOrder)) ||
+        normalizeIdentifier(cell(row, indexes.customerOrder)) ||
+        fallbackPo;
+      const kind = transactionKind(type, description, amountType);
+      const feeLike = /fee|commission|shipping label|reserve|wfs|storage|refund/i.test(kind);
+      const signedAmount = feeLike ? -Math.abs(amount) : amount;
+      const quantity = Number.parseInt(cell(row, indexes.quantity), 10);
+
+      return {
+        po_number: po,
+        transaction_date: normalizeDate(cell(row, indexes.date)),
+        transaction_type: kind,
+        item_id: normalizeIdentifier(cell(row, indexes.itemId)),
+        quantity: Number.isNaN(quantity) || quantity < 1 ? 1 : quantity,
+        net_payable: Number(signedAmount.toFixed(2)),
+        status: cell(row, indexes.status) || amountType || "Imported",
+        raw_text: line,
+      };
+    })
+    .filter((transaction) => transaction.po_number && transaction.transaction_type && transaction.net_payable !== 0);
+}
+
 function firstNumberAfter(text: string, label: string) {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const found = text.match(new RegExp(`${escaped}\\D+(\\d+)`, "i"))?.[1];
@@ -267,6 +379,9 @@ function parseTransactionLine(line: string, fallbackPo: string): ParsedTransacti
 }
 
 function parseTransactions(transactionText: string, fallbackPo: string): ParsedTransaction[] {
+  const reportRows = parseTransactionReport(transactionText, fallbackPo);
+  if (reportRows.length) return reportRows;
+
   const text = compact(transactionText);
   if (!text) return [];
   const lines = normalizeTransactionRows(text);
@@ -293,8 +408,8 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
 export function parseWalmartImport(orderText: string, transactionText: string): ParsedImport {
   const order = parseOrderDetails(orderText);
   const transactions = parseTransactions(transactionText, order.po_number);
-  const feeFromTransactions = transactions
-    .filter((transaction) => /fee|service|referral|processing/i.test(transaction.transaction_type))
+  const shippingFromTransactions = transactions
+    .filter((transaction) => /shipping label/i.test(transaction.transaction_type))
     .reduce((sum, transaction) => sum + Math.abs(transaction.net_payable), 0);
   const warnings: string[] = [];
 
@@ -303,8 +418,8 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
   if (!order.upc) warnings.push("UPC was not found; inventory matching will need manual correction.");
   if (!order.subtotal) warnings.push("Subtotal was not found.");
   if (!order.customer_total && order.subtotal) order.customer_total = order.subtotal;
-  if (!order.shipping_cost && feeFromTransactions) {
-    order.shipping_cost = Number(feeFromTransactions.toFixed(2));
+  if (!order.shipping_cost && shippingFromTransactions) {
+    order.shipping_cost = Number(shippingFromTransactions.toFixed(2));
   }
   if (!transactions.length && order.subtotal) {
     transactions.push({

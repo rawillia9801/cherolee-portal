@@ -172,8 +172,16 @@ export async function saveParsedImport(parsed: ParsedImport) {
 
   if (itemInsert.error) throw formatSupabaseError("Inserting order item", itemInsert.error);
 
-  const feeRows = transactions
-    .filter((transaction) => /fee|service|referral|processing/i.test(transaction.transaction_type))
+  const matchingTransactions = transactions.filter((transaction) => {
+    const transactionPo = transaction.po_number?.trim();
+    return !transactionPo || transactionPo === poNumber || transactionPo === order.walmart_order_number;
+  });
+  const transactionShippingCost = matchingTransactions
+    .filter((transaction) => /shipping label/i.test(transaction.transaction_type))
+    .reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
+  const feeRows = matchingTransactions
+    .filter((transaction) => /fee|service|referral|processing|commission|reserve|wfs/i.test(transaction.transaction_type))
+    .filter((transaction) => !/refund|shipping label/i.test(transaction.transaction_type))
     .map((transaction) => ({
       order_id: savedOrder.id,
       fee_type: transaction.transaction_type,
@@ -194,15 +202,15 @@ export async function saveParsedImport(parsed: ParsedImport) {
     tracking_number: order.tracking_number || null,
     shipping_status: order.shipping_status || order.status || null,
     method: null,
-    shipping_cost: order.shipping_cost,
+    shipping_cost: transactionShippingCost || order.shipping_cost,
     estimated_delivery: order.estimated_delivery || null,
     label_format: null,
   });
   if (shipmentInsert.error) throw formatSupabaseError("Inserting shipment", shipmentInsert.error);
 
-  if (transactions.length) {
+  if (matchingTransactions.length) {
     const txInsert = await supabase.from("transactions").insert(
-      transactions.map((transaction) => ({
+      matchingTransactions.map((transaction) => ({
         order_id: savedOrder.id,
         po_number: poNumber,
         transaction_date: transaction.transaction_date || null,

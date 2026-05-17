@@ -51,6 +51,7 @@ import {
   orderGross,
   orderMargin,
   orderProfit,
+  orderRefunds,
   orderShipping,
   percent,
   profitTrend,
@@ -685,7 +686,7 @@ function OrdersView({
             <strong>PO {orders[0].po_number}</strong>
             <span>Profit = gross item sales - Walmart fees - shipping cost - COGS</span>
             <p>
-              {currency(orderProfit(orders[0], inventory))} = {currency(orderGross(orders[0]))} - {currency(orderFees(orders[0]))} - {currency(orderShipping(orders[0]))} - {currency(orderCogs(orders[0], inventory))}
+              {currency(orderProfit(orders[0], inventory))} = {currency(orderGross(orders[0]))} - {currency(orderFees(orders[0]))} - {currency(orderShipping(orders[0]))} - {currency(orderCogs(orders[0], inventory))} - {currency(orderRefunds(orders[0]))}
             </p>
             <small>Margin: {percent(orderMargin(orders[0], inventory))}</small>
           </div>
