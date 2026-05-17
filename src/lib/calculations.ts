@@ -26,7 +26,7 @@ export function orderShipping(order: OrderView) {
 
 export function orderRefunds(order: OrderView) {
   return order.transactions
-    .filter((transaction) => /refund|return/i.test(transaction.transaction_type || transaction.status || ""))
+    .filter((transaction) => /refund|return shipping/i.test(transaction.transaction_type || transaction.status || ""))
     .reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
 }
 

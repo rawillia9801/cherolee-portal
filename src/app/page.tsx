@@ -161,7 +161,8 @@ export default function Home() {
   const parsePreview = () => {
     const parsed = parseWalmartImport(orderText, transactionText);
     setPreview(parsed);
-    setMessage(parsed.warnings.length ? parsed.warnings.join(" ") : "Preview parsed. Review fields, then save.");
+    const batchMessage = parsed.batch?.length ? ` ${parsed.batch.length} orders are ready for batch save.` : "";
+    setMessage(parsed.warnings.length ? `${parsed.warnings.join(" ")}${batchMessage}` : `Preview parsed.${batchMessage} Review fields, then save.`);
   };
 
   const updatePreviewOrder = (key: keyof ParsedOrder, value: string) => {
@@ -190,8 +191,15 @@ export default function Home() {
     }
     setSaving(true);
     try {
-      await saveParsedImport(preview);
-      setMessage(`Saved PO ${preview.order.po_number} to Supabase and refreshed the dashboard.`);
+      const importsToSave = preview.batch?.length ? preview.batch : [preview];
+      for (const parsedImport of importsToSave) {
+        await saveParsedImport(parsedImport);
+      }
+      setMessage(
+        importsToSave.length > 1
+          ? `Saved ${importsToSave.length} Walmart order groups to Supabase and refreshed the dashboard.`
+          : `Saved PO ${preview.order.po_number} to Supabase and refreshed the dashboard.`,
+      );
       setPreview(null);
       await refresh();
       setActiveView("dashboard");
@@ -521,7 +529,7 @@ function ImportView(props: {
       <div className="import-actions">
         <button className="export-button" onClick={props.parsePreview}><Search size={16} /> Parse Preview</button>
         <button className="filter-button" onClick={props.savePreview} disabled={!props.preview || props.saving}>
-          <CheckCircle2 size={16} /> {props.saving ? "Saving..." : "Confirm and Save"}
+          <CheckCircle2 size={16} /> {props.saving ? "Saving..." : props.preview?.batch?.length ? `Save ${props.preview.batch.length} Orders` : "Confirm and Save"}
         </button>
       </div>
 
@@ -706,7 +714,7 @@ function itemOrderBreakdown(order: OrderView, upc: string, inventory: InventoryI
   const shipping = orderShipping(order) * share;
   const unitCost = Number(inventory.find((inventoryItem) => inventoryItem.upc === upc)?.unit_cost ?? item.unit_cost ?? 0);
   const cogs = unitCost * Number(item.quantity || 0);
-  const refunds = order.transactions.filter((transaction) => /refund/i.test(transaction.transaction_type || transaction.status || ""));
+  const refunds = order.transactions.filter((transaction) => /refund|return shipping/i.test(transaction.transaction_type || transaction.status || ""));
   const refundTotal = refunds.reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
   const profit = itemGross - fees - shipping - cogs - refundTotal;
 

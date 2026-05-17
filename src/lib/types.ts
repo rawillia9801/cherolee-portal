@@ -118,6 +118,9 @@ export type ParsedTransaction = {
   transaction_date?: string;
   transaction_type: string;
   item_id?: string;
+  upc?: string;
+  product_name?: string;
+  amount_type?: string;
   quantity: number;
   net_payable: number;
   status?: string;
@@ -130,6 +133,7 @@ export type ParsedImport = {
   warnings: string[];
   raw_order_text?: string;
   raw_transaction_text?: string;
+  batch?: ParsedImport[];
 };
 
 export type OrderView = Order & {

@@ -139,11 +139,19 @@ function cell(row: string[], index: number) {
 
 function transactionKind(type: string, description: string, amountType: string) {
   const joined = `${type} ${description} ${amountType}`;
-  if (/refund|return/i.test(joined)) return "Refund";
+  if (/return\s*shipping/i.test(joined)) return "Return Shipping";
+  if (/return\s*processing/i.test(joined)) return "WFS Return Processing Fee";
+  if (/return\s*refund|refund/i.test(joined)) return "Refund";
   if (/shipping label/i.test(joined)) return "Shipping Label";
   if (/commission/i.test(joined)) return "Walmart Service Fee";
-  if (/service fee|storagefee|inventory|reserve|wfs|fee/i.test(joined)) return type || amountType || "Service Fee";
-  if (/sale|purchase|product/i.test(joined)) return "Sale";
+  if (/product\s*tax|\btax\b/i.test(joined)) return "Tax";
+  if (/wfs\s*fulfillment/i.test(joined)) return "WFS Fulfillment Fee";
+  if (/storage\s*fee|storagefee/i.test(joined)) return "WFS Storage Fee";
+  if (/inventory\s*removal/i.test(joined)) return "WFS Inventory Removal Fee";
+  if (/inbound\s*transportation/i.test(joined)) return "WFS Inbound Transportation Fee";
+  if (/reserve/i.test(joined)) return "Reserve";
+  if (/service fee|wfs|fee/i.test(joined)) return description || type || amountType || "Service Fee";
+  if (/sale|purchase|product\s*price/i.test(joined)) return "Sale";
   return type || amountType || "Transaction";
 }
 
@@ -161,7 +169,9 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
     amount: headerIndex(headers, ["Amount"]),
     amountType: headerIndex(headers, ["Amount Type"]),
     quantity: headerIndex(headers, ["Ship Qty", "Quantity", "Qty"]),
-    itemId: headerIndex(headers, ["Partner Item ID", "Item ID", "Product ID", "Product"]),
+    itemId: headerIndex(headers, ["Partner Item ID", "Item ID", "Product ID", "Partner GTIN"]),
+    upc: headerIndex(headers, ["UPC", "GTIN", "Product ID", "Partner Item ID", "Partner GTIN"]),
+    productName: headerIndex(headers, ["Product Name", "Product Title", "Item Name", "Item Description"]),
     status: headerIndex(headers, ["Transaction Status", "Status"]),
     date: headerIndex(headers, ["Transaction Date", "Date"]),
   };
@@ -180,8 +190,8 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
         normalizeIdentifier(cell(row, indexes.customerOrder)) ||
         fallbackPo;
       const kind = transactionKind(type, description, amountType);
-      const feeLike = /fee|commission|shipping label|reserve|wfs|storage|refund/i.test(kind);
-      const signedAmount = feeLike ? -Math.abs(amount) : amount;
+      const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(kind);
+      const signedAmount = chargeLike ? -Math.abs(amount) : amount;
       const quantity = Number.parseInt(cell(row, indexes.quantity), 10);
 
       return {
@@ -189,6 +199,9 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
         transaction_date: normalizeDate(cell(row, indexes.date)),
         transaction_type: kind,
         item_id: normalizeIdentifier(cell(row, indexes.itemId)),
+        upc: normalizeIdentifier(cell(row, indexes.upc)),
+        product_name: cell(row, indexes.productName),
+        amount_type: amountType,
         quantity: Number.isNaN(quantity) || quantity < 1 ? 1 : quantity,
         net_payable: Number(signedAmount.toFixed(2)),
         status: cell(row, indexes.status) || amountType || "Imported",
@@ -196,6 +209,123 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
       };
     })
     .filter((transaction) => transaction.po_number && transaction.transaction_type && transaction.net_payable !== 0);
+}
+
+function transactionOrderKey(transaction: ParsedTransaction) {
+  return transaction.po_number?.trim();
+}
+
+function chooseTransactionGroup(transactions: ParsedTransaction[]) {
+  const grouped = new Map<string, ParsedTransaction[]>();
+  for (const transaction of transactions) {
+    const key = transactionOrderKey(transaction);
+    if (!key) continue;
+    grouped.set(key, [...(grouped.get(key) ?? []), transaction]);
+  }
+
+  const groups = [...grouped.entries()].sort(([, left], [, right]) => right.length - left.length);
+  return groups[0] ?? null;
+}
+
+function transactionGroups(transactions: ParsedTransaction[]) {
+  const grouped = new Map<string, ParsedTransaction[]>();
+  for (const transaction of transactions) {
+    const key = transactionOrderKey(transaction);
+    if (!key) continue;
+    grouped.set(key, [...(grouped.get(key) ?? []), transaction]);
+  }
+  return [...grouped.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+}
+
+function firstUsefulProductName(transactions: ParsedTransaction[]) {
+  return (
+    transactions.find((transaction) => transaction.product_name && !/^\d+$/.test(transaction.product_name))?.product_name ||
+    transactions.find((transaction) => transaction.raw_text.match(/[A-Za-z].{12,}/))?.product_name ||
+    "Imported Walmart item"
+  );
+}
+
+function firstUsefulUpc(transactions: ParsedTransaction[]) {
+  return (
+    transactions.find((transaction) => transaction.upc && /^\d{12,14}$/.test(transaction.upc))?.upc ||
+    transactions.find((transaction) => transaction.item_id && /^\d{12,14}$/.test(transaction.item_id))?.item_id ||
+    transactions.find((transaction) => transaction.upc)?.upc ||
+    transactions.find((transaction) => transaction.item_id)?.item_id ||
+    ""
+  );
+}
+
+function orderFromTransactionGroup(poNumber: string, group: ParsedTransaction[], groupCount: number) {
+  const productSales = group.filter((transaction) => {
+    const joined = `${transaction.transaction_type} ${transaction.amount_type ?? ""} ${transaction.status ?? ""}`;
+    return /sale/i.test(transaction.transaction_type) && /product\s*price|purchase|sale/i.test(joined) && transaction.net_payable > 0;
+  });
+  const shippingRows = group.filter((transaction) => /shipping label/i.test(transaction.transaction_type));
+  const gross = productSales.reduce((sum, transaction) => sum + Number(transaction.net_payable || 0), 0);
+  const quantity = Math.max(1, productSales.reduce((sum, transaction) => sum + Number(transaction.quantity || 0), 0) || 1);
+  const shipping = shippingRows.reduce((sum, transaction) => sum + Math.abs(Number(transaction.net_payable || 0)), 0);
+  const firstTransaction = group[0];
+
+  return {
+    groupCount,
+    order: {
+      po_number: poNumber,
+      walmart_order_number: poNumber,
+      product_name: firstUsefulProductName(group),
+      upc: firstUsefulUpc(group),
+      walmart_item_id: group.find((transaction) => transaction.item_id)?.item_id,
+      quantity,
+      unit_price: Number((gross / quantity).toFixed(2)),
+      subtotal: Number(gross.toFixed(2)),
+      shipping_cost: Number(shipping.toFixed(2)),
+      order_date: productSales.find((transaction) => transaction.transaction_date)?.transaction_date || firstTransaction.transaction_date,
+      shipping_fee_charged: 0,
+      taxes: 0,
+      customer_total: Number(gross.toFixed(2)),
+      amount_adjusted: 0,
+      status: firstTransaction.status || "Imported",
+    },
+  };
+}
+
+function orderFromTransactionReport(transactions: ParsedTransaction[]): { order: ParsedOrder; groupCount: number } | null {
+  const chosen = chooseTransactionGroup(transactions);
+  if (!chosen) return null;
+  return orderFromTransactionGroup(chosen[0], chosen[1], transactionGroups(transactions).length);
+}
+
+function importsFromTransactionReport(transactions: ParsedTransaction[], rawTransactionText: string): ParsedImport[] {
+  const groups = transactionGroups(transactions);
+  return groups
+    .map(([poNumber, group]) => {
+      const derived = orderFromTransactionGroup(poNumber, group, groups.length);
+      return {
+        order: derived.order,
+        transactions: group,
+        warnings: [
+          `Imported ${group.length} transaction report lines for PO/order ${poNumber}.`,
+          ...(!derived.order.upc ? ["UPC was not found; inventory matching will need manual correction."] : []),
+          ...(!derived.order.subtotal ? ["Product sale proceeds were not found for this order."] : []),
+        ],
+        raw_order_text: "",
+        raw_transaction_text: rawTransactionText,
+      };
+    })
+    .filter((parsed) => parsed.order.po_number);
+}
+
+function mergeDerivedOrder(order: ParsedOrder, derived: ParsedOrder): ParsedOrder {
+  const merged = { ...order };
+  for (const key of Object.keys(derived) as (keyof ParsedOrder)[]) {
+    const current = merged[key];
+    const next = derived[key];
+    const isMissingString = typeof current === "string" && (!current || current === "Unlabeled Walmart item");
+    const isMissingNumber = typeof current === "number" && !current;
+    if (current === undefined || isMissingString || isMissingNumber) {
+      (merged[key] as ParsedOrder[typeof key]) = next;
+    }
+  }
+  return merged;
 }
 
 function firstNumberAfter(text: string, label: string) {
@@ -406,13 +536,28 @@ function parseTransactions(transactionText: string, fallbackPo: string): ParsedT
 }
 
 export function parseWalmartImport(orderText: string, transactionText: string): ParsedImport {
-  const order = parseOrderDetails(orderText);
+  let order = parseOrderDetails(orderText);
   const transactions = parseTransactions(transactionText, order.po_number);
+  const derived = transactions.length ? orderFromTransactionReport(transactions) : null;
+  if (derived) {
+    order = mergeDerivedOrder(order, derived.order);
+  }
   const shippingFromTransactions = transactions
     .filter((transaction) => /shipping label/i.test(transaction.transaction_type))
     .reduce((sum, transaction) => sum + Math.abs(transaction.net_payable), 0);
   const warnings: string[] = [];
+  const batch =
+    derived && derived.groupCount > 1 && !orderText.trim()
+      ? importsFromTransactionReport(transactions, transactionText)
+      : undefined;
 
+  if (derived && derived.groupCount > 1) {
+    warnings.push(
+      batch
+        ? `The transaction report contains ${derived.groupCount} order groups. Confirm and Save will import each order group separately.`
+        : `The transaction report contains ${derived.groupCount} order groups. This preview is showing PO/order ${derived.order.po_number}; save imports the lines for that order.`,
+    );
+  }
   if (!order.po_number) warnings.push("No PO or Walmart order number was found.");
   if (!order.walmart_order_number) warnings.push("Walmart order number was not found.");
   if (!order.upc) warnings.push("UPC was not found; inventory matching will need manual correction.");
@@ -433,5 +578,5 @@ export function parseWalmartImport(orderText: string, transactionText: string): 
     });
   }
 
-  return { order, transactions, warnings, raw_order_text: orderText, raw_transaction_text: transactionText };
+  return { order, transactions, warnings, raw_order_text: orderText, raw_transaction_text: transactionText, batch };
 }
