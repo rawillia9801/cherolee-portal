@@ -334,19 +334,22 @@ export async function createInventoryItem(input: { upc: string; product_name?: s
   if (!supabase) throw new Error("Supabase is not configured.");
   const upc = normalizeLookup(input.upc);
   assertRequired(upc, "UPC");
+  const basePayload = {
+    upc,
+    product_name: input.product_name?.trim() || `New item ${upc}`,
+    marketplace: "Walmart",
+    quantity_on_hand: 0,
+    unit_cost: 0,
+    reorder_point: 0,
+    needs_cost: true,
+  };
 
   const response = await supabase
     .from("inventory_items")
     .upsert(
       {
-        upc,
+        ...basePayload,
         partner_gtin: upc,
-        product_name: input.product_name?.trim() || `New item ${upc}`,
-        marketplace: "Walmart",
-        quantity_on_hand: 0,
-        unit_cost: 0,
-        reorder_point: 0,
-        needs_cost: true,
         fulfillment_type: "Seller Fulfilled",
         last_scanned_at: new Date().toISOString(),
       },
@@ -354,6 +357,15 @@ export async function createInventoryItem(input: { upc: string; product_name?: s
     )
     .select("*")
     .single();
+  if (response.error && /schema cache|partner_gtin|fulfillment_type|last_scanned_at|column/i.test(response.error.message ?? "")) {
+    const fallbackResponse = await supabase
+      .from("inventory_items")
+      .upsert(basePayload, { onConflict: "upc" })
+      .select("*")
+      .single();
+    if (fallbackResponse.error) throw formatSupabaseError("Creating inventory item", fallbackResponse.error);
+    return fallbackResponse.data as InventoryItem;
+  }
   if (response.error) throw formatSupabaseError("Creating inventory item", response.error);
   return response.data as InventoryItem;
 }

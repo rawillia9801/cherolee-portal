@@ -881,6 +881,7 @@ function InventoryView({
   const [stockRange, setStockRange] = useState("30 Days");
   const [missingLookup, setMissingLookup] = useState("");
   const [newItemName, setNewItemName] = useState("");
+  const [creatingItem, setCreatingItem] = useState(false);
 
   const selectedItem = missingLookup ? null : inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
@@ -994,38 +995,46 @@ function InventoryView({
   const createMissingItem = async () => {
     const lookup = missingLookup || normalizeLookup(query);
     if (!lookup) return;
-    if (!configured) {
-      const now = new Date().toISOString();
-      const created: InventoryItem = {
-        id: `demo-inv-${Date.now()}`,
-        upc: lookup,
-        partner_gtin: lookup,
-        product_name: newItemName.trim() || `New item ${lookup}`,
-        marketplace: "Walmart",
-        quantity_on_hand: 0,
-        unit_cost: 0,
-        reorder_point: 0,
-        needs_cost: true,
-        fulfillment_type: "Seller Fulfilled",
-        created_at: now,
-        updated_at: now,
-        last_scanned_at: now,
-      };
-      setInventory((current) => [created, ...current]);
+    setCreatingItem(true);
+    try {
+      if (!configured) {
+        const now = new Date().toISOString();
+        const created: InventoryItem = {
+          id: `demo-inv-${Date.now()}`,
+          upc: lookup,
+          partner_gtin: lookup,
+          product_name: newItemName.trim() || `New item ${lookup}`,
+          marketplace: "Walmart",
+          quantity_on_hand: 0,
+          unit_cost: 0,
+          reorder_point: 0,
+          needs_cost: true,
+          fulfillment_type: "Seller Fulfilled",
+          created_at: now,
+          updated_at: now,
+          last_scanned_at: now,
+        };
+        setInventory((current) => [created, ...current]);
+        setSelectedItemId(created.id);
+        setMissingLookup("");
+        setNewItemName("");
+        setQuery(lookup);
+        setMessage("Created demo inventory item. Supabase is required for persistence.");
+        return;
+      }
+      const created = await createInventoryItem({ upc: lookup, product_name: newItemName });
+      setInventory((current) => [created, ...current.filter((item) => item.id !== created.id && item.upc !== created.upc)]);
       setSelectedItemId(created.id);
       setMissingLookup("");
       setNewItemName("");
-      setQuery(lookup);
-      setMessage("Created demo inventory item. Supabase is required for persistence.");
-      return;
+      setQuery(created.upc);
+      setMessage(`Created inventory item for ${created.upc}.`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Creating inventory item failed.");
+    } finally {
+      setCreatingItem(false);
     }
-    const created = await createInventoryItem({ upc: lookup, product_name: newItemName });
-    await refresh();
-    setSelectedItemId(created.id);
-    setMissingLookup("");
-    setNewItemName("");
-    setQuery(created.upc);
-    setMessage(`Created inventory item for ${created.upc}.`);
   };
 
   if (!selectedItem || !selectedStats) {
@@ -1065,7 +1074,9 @@ function InventoryView({
             Product name
             <input value={newItemName} placeholder="Optional product name" onChange={(event) => setNewItemName(event.target.value)} />
           </label>
-          <button className="export-button" onClick={createMissingItem}><Plus size={15} /> Create Inventory Item</button>
+          <button className="export-button" onClick={createMissingItem} disabled={creatingItem}>
+            <Plus size={15} /> {creatingItem ? "Creating..." : "Create Inventory Item"}
+          </button>
         </section>
       </div>
     );
@@ -1108,7 +1119,11 @@ function InventoryView({
         <section className="search-results-card">
           <strong>{searchResults.length ? "Matching Results" : "Item not found"}</strong>
           {searchResults.map((item) => <button key={item.id} onClick={() => { setMissingLookup(""); setSelectedItemId(item.id); }}>{item.product_name}<span>{item.upc}</span></button>)}
-          {!searchResults.length && <button className="export-button" onClick={createMissingItem}><Plus size={15} /> Create Inventory Item</button>}
+          {!searchResults.length && (
+            <button className="export-button" onClick={createMissingItem} disabled={creatingItem}>
+              <Plus size={15} /> {creatingItem ? "Creating..." : "Create Inventory Item"}
+            </button>
+          )}
         </section>
       )}
 
