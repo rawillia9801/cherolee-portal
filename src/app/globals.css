@@ -755,6 +755,34 @@ th {
   background: #fff7f6;
 }
 
+.row-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+  background: #fff;
+  border: 1px solid #dce2ef;
+  border-radius: 6px;
+}
+
+.row-action-button:hover {
+  color: #5136c9;
+  border-color: #c9c2ff;
+}
+
+.row-action-button.danger {
+  color: #b42318;
+}
+
+.row-action-button.danger:hover {
+  border-color: #f6b8b3;
+  background: #fff7f6;
+}
+
 .formula {
   display: grid;
   gap: 8px;

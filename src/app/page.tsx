@@ -1412,16 +1412,20 @@ function OrdersTable({
               {(onEdit || onDelete) && (
                 <td>
                   <div className="row-actions">
-                    {onEdit && <button className="icon-button" onClick={() => onEdit(order)} title="Edit order"><Edit3 size={14} /></button>}
+                    {onEdit && (
+                      <button className="row-action-button" onClick={() => onEdit(order)} title="Edit order">
+                        <Edit3 size={14} /> Edit
+                      </button>
+                    )}
                     {onDelete && (
                       <button
-                        className="icon-button danger"
+                        className="row-action-button danger"
                         onClick={() => void onDelete(order).catch((error) => {
                           window.alert(error instanceof Error ? error.message : "Order delete failed.");
                         })}
                         title="Delete order"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={14} /> Delete
                       </button>
                     )}
                   </div>
