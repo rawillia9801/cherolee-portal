@@ -1392,25 +1392,45 @@ function OrdersTable({
   onEdit?: (order: OrderView) => void;
   onDelete?: (order: OrderView) => Promise<void>;
 }) {
+  const [selectedOrder, setSelectedOrder] = useState<OrderView | null>(null);
+  const lastFour = (value?: string | null) => {
+    const digits = (value || "").replace(/\D/g, "");
+    return digits ? digits.slice(-4) : "----";
+  };
+  const firstItem = (order: OrderView) => order.items[0];
+  const commissionTotal = (order: OrderView) =>
+    order.fees
+      .filter((fee) => /commission|service|referral/i.test(fee.fee_type || ""))
+      .reduce((sum, fee) => sum + Math.abs(Number(fee.amount || 0)), 0);
+  const wfsFeeTotal = (order: OrderView) =>
+    order.fees
+      .filter((fee) => /wfs|fulfillment/i.test(fee.fee_type || ""))
+      .reduce((sum, fee) => sum + Math.abs(Number(fee.amount || 0)), 0);
+  const shippingOrWfs = (order: OrderView) => {
+    const shipping = orderShipping(order);
+    return shipping || wfsFeeTotal(order);
+  };
+
   return (
     <section className={clsx("table-card", compact && "wide")}>
       <div className="card-heading"><h2>Recent Orders</h2><button className="tiny-button">View All</button></div>
-      <table>
-        <thead><tr><th>PO #</th><th>Order #</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Fees</th><th>Profit</th><th>Status</th>{(onEdit || onDelete) && <th>Actions</th>}</tr></thead>
+      <table className="orders-accounting-table">
+        <thead><tr><th>Order Date</th><th>Order #</th><th>Item Name</th><th>Sales Price</th><th>Shipping / WFS</th><th>Commission</th><th>Cost of Goods</th><th>Profit</th>{(onEdit || onDelete) && <th>Actions</th>}</tr></thead>
         <tbody>
-          {orders.map((order) => (
-            <tr key={order.id}>
-              <td>{order.po_number}</td>
-              <td>{order.walmart_order_number}</td>
-              <td>{order.order_date}</td>
-              <td>{order.customer_name}</td>
-              <td>{order.items.length}</td>
-              <td>{currency(order.customer_total)}</td>
-              <td>{currency(orderFees(order))}</td>
-              <td>{currency(orderProfit(order, inventory))}</td>
-              <td><span className={statusClass(order.status)}>{order.status || "Parsed"}</span></td>
+          {orders.map((order) => {
+            const item = firstItem(order);
+            return (
+            <tr key={order.id} className="clickable-order-row" onClick={() => setSelectedOrder(order)}>
+              <td>{order.order_date || order.created_at?.slice(0, 10) || "-"}</td>
+              <td><span className="order-last-four">#{lastFour(order.walmart_order_number || order.po_number)}</span></td>
+              <td className="order-item-name">{item?.product_name || "Unknown item"}</td>
+              <td>{currency(orderGross(order))}</td>
+              <td>{currency(shippingOrWfs(order))}</td>
+              <td>{currency(commissionTotal(order))}</td>
+              <td>{currency(orderCogs(order, inventory))}</td>
+              <td className={orderProfit(order, inventory) >= 0 ? "profit-positive" : "profit-negative"}>{currency(orderProfit(order, inventory))}</td>
               {(onEdit || onDelete) && (
-                <td>
+                <td onClick={(event) => event.stopPropagation()}>
                   <div className="row-actions">
                     {onEdit && (
                       <button className="row-action-button" onClick={() => onEdit(order)} title="Edit order">
@@ -1432,9 +1452,34 @@ function OrdersTable({
                 </td>
               )}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
+      {selectedOrder && (
+        <div className="order-detail-drawer">
+          <div className="card-heading">
+            <h3>Order Details #{lastFour(selectedOrder.walmart_order_number || selectedOrder.po_number)}</h3>
+            <button className="tiny-button" onClick={() => setSelectedOrder(null)}>Close</button>
+          </div>
+          <div className="order-detail-grid">
+            <span>Buyer <strong>{selectedOrder.customer_name || "Not captured"}</strong></span>
+            <span>Full order # <strong>{selectedOrder.walmart_order_number || "-"}</strong></span>
+            <span>PO # <strong>{selectedOrder.po_number || "-"}</strong></span>
+            <span>Status <strong>{selectedOrder.status || "Parsed"}</strong></span>
+            <span>Order date <strong>{selectedOrder.order_date || "-"}</strong></span>
+            <span>Items <strong>{selectedOrder.items.map((item) => item.product_name).join(", ") || "-"}</strong></span>
+            <span>UPC <strong>{selectedOrder.items.map((item) => item.upc).filter(Boolean).join(", ") || "-"}</strong></span>
+            <span>Quantity <strong>{selectedOrder.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0)}</strong></span>
+            <span>Sales <strong>{currency(orderGross(selectedOrder))}</strong></span>
+            <span>Shipping / WFS <strong>{currency(shippingOrWfs(selectedOrder))}</strong></span>
+            <span>Commission <strong>{currency(commissionTotal(selectedOrder))}</strong></span>
+            <span>COGS <strong>{currency(orderCogs(selectedOrder, inventory))}</strong></span>
+            <span>Refunds <strong>{currency(orderRefunds(selectedOrder))}</strong></span>
+            <span>Profit <strong>{currency(orderProfit(selectedOrder, inventory))}</strong></span>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

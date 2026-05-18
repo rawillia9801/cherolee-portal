@@ -783,6 +783,75 @@ th {
   background: #fff7f6;
 }
 
+.orders-accounting-table th,
+.orders-accounting-table td {
+  vertical-align: middle;
+}
+
+.clickable-order-row {
+  cursor: pointer;
+}
+
+.clickable-order-row:hover {
+  background: #f8faff;
+}
+
+.order-last-four {
+  display: inline-flex;
+  min-width: 54px;
+  justify-content: center;
+  padding: 5px 8px;
+  color: #4c3fb5;
+  font-weight: 900;
+  background: #f1efff;
+  border: 1px solid #ddd8ff;
+  border-radius: 999px;
+}
+
+.order-item-name {
+  max-width: 420px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.order-detail-drawer {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f8faff;
+  border: 1px solid #dfe5f2;
+  border-radius: 8px;
+}
+
+.order-detail-drawer h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.order-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.order-detail-grid span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.order-detail-grid strong {
+  overflow-wrap: anywhere;
+  color: #101828;
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: none;
+}
+
 .formula {
   display: grid;
   gap: 8px;
