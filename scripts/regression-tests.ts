@@ -64,6 +64,18 @@ for (const entry of parsed.batch ?? []) {
   assert.ok(entry.transactions.some((transaction) => /Shipping Label/i.test(transaction.transaction_type)), "shipping label line should stay with the order");
 }
 
+const sameCustomerOrderDifferentEvents = parseWalmartImport("", `${header}\n${[
+  ["", "", "", "", "2026_04_20_742224", "4/19/2026", "Sale", "Purchase", "200014318360369", "1", "1.19111E+14", "1", "19.99", "Product Price", "1", "", "", "", "37321002277", "37321002277", "Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent", "3001194", "NE", "North Platte", "69101", "Home & Garden", "Insect & Pest Repellent", "BSE-66-7.0", "Marketplace standard", "Seller Fulfilled", "Delivery", ""],
+  ["", "", "", "", "2026_04_20_742224", "4/19/2026", "Sale", "Purchase", "200014318360369", "1", "1.19111E+14", "1", "-3", "Commission on Product", "1", "15", "15", "", "37321002277", "37321002277", "Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent", "3001194", "NE", "North Platte", "69101", "Home & Garden", "Insect & Pest Repellent", "BSE-66-7.0", "Marketplace standard", "Seller Fulfilled", "Delivery", "-3"],
+  ["", "", "", "", "2026_04_20_776065", "4/19/2026", "Adjustment", "Walmart Shipping Label Service Charge", "200014318360369", "1", "1.19111E+14", "1", "-11.33", "Fee/Reimbursement", "", "", "", "", "37321002277", "37321002277", "Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent", "3001194", "NE", "North Platte", "69101", "Home & Garden", "Insect & Pest Repellent", "", "", "Seller Fulfilled", "", ""],
+].map((row) => row.join("\t")).join("\n")}`);
+assert.equal(sameCustomerOrderDifferentEvents.batch, undefined, "same customer order should not split into multiple imported orders");
+assert.equal(sameCustomerOrderDifferentEvents.order.po_number, "200014318360369", "customer order number should be the primary group key when it is available");
+assert.equal(sameCustomerOrderDifferentEvents.order.subtotal, 19.99, "product price should stay on the order");
+assert.equal(sameCustomerOrderDifferentEvents.order.shipping_cost, 11.33, "shipping label event should stay with the same order");
+assert.ok(sameCustomerOrderDifferentEvents.transactions.some((transaction) => /Walmart Service Fee/i.test(transaction.transaction_type)), "commission should stay with the same order");
+assert.notEqual(sameCustomerOrderDifferentEvents.order.upc, "North Platte", "city must not become UPC/GTIN");
+
 const freeform = parseWalmartImport("", `
 2026_04_20_742224 ######## Sale Purchase 2E+14 1 1.19E+14 1 19.99 Product Pr 1 37321002277 37321002277 Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent 3001194 NE North Platte 69101 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery
 2026_04_20_742224 ######## Sale Purchase 2E+14 1 1.19E+14 1 -3 Commissi 1 15 15 37321002277 37321002277 Bonide Go Away! Deer & Rabbit Repellent Granules 3 lb. Ready-to-Use Deterrent 3001194 NE North Platte 69101 Home & Garden Insect & Pest Repellent BSE-66-7.0 Marketplace standard Seller Fulfilled Delivery

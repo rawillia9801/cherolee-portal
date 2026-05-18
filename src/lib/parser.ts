@@ -208,9 +208,13 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
       const description = cell(row, indexes.description);
       const amountType = cell(row, indexes.amountType);
       const amount = toNumber(cell(row, indexes.amount));
+      const customerOrder = normalizeIdentifier(cell(row, indexes.customerOrder));
+      const purchaseOrder = normalizeIdentifier(cell(row, indexes.purchaseOrder));
       const po =
-        normalizeIdentifier(cell(row, indexes.purchaseOrder)) ||
-        normalizeIdentifier(cell(row, indexes.customerOrder)) ||
+        (isReliableOrderIdentifier(customerOrder) ? customerOrder : "") ||
+        (isReliableOrderIdentifier(purchaseOrder) ? purchaseOrder : "") ||
+        customerOrder ||
+        purchaseOrder ||
         fallbackPo;
       const kind = transactionKind(type, description, amountType);
       const chargeLike = /fee|commission|shipping label|wfs|storage|refund|return shipping/i.test(kind);
@@ -218,7 +222,7 @@ function parseTransactionReport(transactionText: string, fallbackPo: string): Pa
       const quantity = Number.parseInt(cell(row, indexes.quantity), 10);
       const transactionKey = cell(row, indexes.transactionKey);
       const orderLine = cell(row, indexes.purchaseOrderLine) || cell(row, indexes.customerOrderLine);
-      const reliablePo = isReliableOrderIdentifier(po);
+      const reliablePo = isReliableOrderIdentifier(customerOrder) || isReliableOrderIdentifier(purchaseOrder);
       const groupKey = reliablePo
         ? po
         : [transactionKey || normalizeIdentifier(cell(row, indexes.customerOrder)), orderLine, cell(row, indexes.upc), cell(row, indexes.productName)].filter(Boolean).join("|");
@@ -324,8 +328,15 @@ function parseFreeformSettlementRows(transactionText: string, fallbackPo: string
       const cityEnd = afterTokens.findIndex((token, index) => index > nameEnd + 1 && /^\d{5}(?:-\d{4})?$/.test(token));
       const city = cityEnd > nameEnd + 1 ? afterTokens.slice(nameEnd + 2, cityEnd).join(" ") : "";
       const zip = cityEnd > -1 ? afterTokens[cityEnd] : "";
-      const po = purchaseOrder ? `${purchaseOrder}${purchaseLine ? `-${purchaseLine}` : ""}` : customerOrder || fallbackPo;
-      const reliablePo = isReliableOrderIdentifier(purchaseOrder || customerOrder || fallbackPo);
+      const reliableCustomerOrder = isReliableOrderIdentifier(customerOrder);
+      const reliablePurchaseOrder = isReliableOrderIdentifier(purchaseOrder);
+      const po =
+        (reliableCustomerOrder ? customerOrder : "") ||
+        (reliablePurchaseOrder ? purchaseOrder : "") ||
+        (purchaseOrder ? `${purchaseOrder}${purchaseLine ? `-${purchaseLine}` : ""}` : "") ||
+        customerOrder ||
+        fallbackPo;
+      const reliablePo = reliableCustomerOrder || reliablePurchaseOrder;
       const groupKey = reliablePo
         ? po
         : [transactionKey, purchaseLine, gtin, productName].filter(Boolean).join("|");
