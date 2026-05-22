@@ -542,6 +542,22 @@ th {
   background: #f8faff;
 }
 
+.table-link-button {
+  padding: 0;
+  color: #101828;
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  font-weight: 750;
+  text-align: left;
+  white-space: normal;
+}
+
+.table-link-button:hover {
+  color: #5136c9;
+  text-decoration: underline;
+}
+
 .profit-positive {
   color: #118044;
   font-weight: 850;
@@ -1586,6 +1602,17 @@ th {
   border: 1px solid #d9d2ff;
   border-radius: 8px;
   box-shadow: 0 14px 36px rgb(91 75 255 / 9%);
+}
+
+.cogs-editor-card .cost-feedback {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  color: #118044;
+  background: #dcfce7;
+  border: 1px solid #b7efc8;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .cogs-editor-card h2 {

@@ -293,6 +293,7 @@ export default function Home() {
   const [preview, setPreview] = useState<ParsedImport | null>(null);
   const [saving, setSaving] = useState(false);
   const [importComplete, setImportComplete] = useState(false);
+  const [inventoryFocusItemId, setInventoryFocusItemId] = useState("");
 
   const refresh = useCallback(async () => {
     if (!configured) {
@@ -419,7 +420,7 @@ export default function Home() {
     const unitCost = Number(value);
     if (Number.isNaN(unitCost) || unitCost < 0) {
       setMessage("Cost Each must be a valid zero-or-higher number.");
-      return;
+      return false;
     }
     if (!configured) {
       setInventory((current) =>
@@ -428,7 +429,7 @@ export default function Home() {
         ),
       );
       setMessage("Demo Mode cost updated locally for preview. Supabase is required for persistence.");
-      return;
+      return true;
     }
     try {
       const updated = await updateInventoryItem(item.id, { unit_cost: unitCost, ...(supplier?.trim() ? { supplier: supplier.trim() } : {}) });
@@ -437,8 +438,10 @@ export default function Home() {
       }
       await refresh();
       setMessage(`Updated Cost Each for ${item.product_name}.`);
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Updating Cost Each failed.");
+      return false;
     }
   };
 
@@ -620,6 +623,10 @@ export default function Home() {
             recentOrders={recentOrders}
             inventory={inventory}
             needsCost={needsCost}
+            onSelectInventoryItem={(itemId) => {
+              setInventoryFocusItemId(itemId);
+              setActiveView("inventory");
+            }}
           />
         )}
 
@@ -646,6 +653,7 @@ export default function Home() {
         )}
         {activeView === "inventory" && (
           <InventoryView
+            key={inventoryFocusItemId || "inventory"}
             configured={configured}
             inventory={inventory}
             orders={orders}
@@ -655,6 +663,7 @@ export default function Home() {
             setInventory={setInventory}
             setMovements={setMovements}
             setMessage={setMessage}
+            initialSelectedItemId={inventoryFocusItemId}
           />
         )}
         {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
@@ -672,6 +681,7 @@ function DashboardView({
   recentOrders,
   inventory,
   needsCost,
+  onSelectInventoryItem,
 }: {
   metrics: ReturnType<typeof dashboardMetrics>;
   trend: ReturnType<typeof profitTrend>;
@@ -680,6 +690,7 @@ function DashboardView({
   recentOrders: OrderView[];
   inventory: InventoryItem[];
   needsCost: InventoryItem[];
+  onSelectInventoryItem: (itemId: string) => void;
 }) {
   const cards = [
     { label: "Gross Revenue", value: currency(metrics.grossRevenue), icon: CircleDollarSign, tone: "green", delta: "12.4%" },
@@ -754,7 +765,7 @@ function DashboardView({
       <InventorySnapshot inventory={inventory.slice(0, 5)} />
       <ProfitSummary metrics={metrics} />
       <TopItems itemSales={itemSales} />
-      <NeedsCostTable items={needsCost} />
+      <NeedsCostTable items={needsCost} onSelectItem={onSelectInventoryItem} />
     </div>
   );
 }
@@ -1387,18 +1398,20 @@ function InventoryView({
   setInventory,
   setMovements,
   setMessage,
+  initialSelectedItemId,
 }: {
   configured: boolean;
   inventory: InventoryItem[];
   orders: OrderView[];
   movements: InventoryMovement[];
-  updateCost: (item: InventoryItem, value: string, supplier?: string) => void;
+  updateCost: (item: InventoryItem, value: string, supplier?: string) => Promise<boolean>;
   refresh: () => Promise<void>;
   setInventory: Dispatch<SetStateAction<InventoryItem[]>>;
   setMovements: Dispatch<SetStateAction<InventoryMovement[]>>;
   setMessage: Dispatch<SetStateAction<string>>;
+  initialSelectedItemId?: string;
 }) {
-  const [selectedItemId, setSelectedItemId] = useState(inventory[0]?.id ?? "");
+  const [selectedItemId, setSelectedItemId] = useState(initialSelectedItemId || inventory[0]?.id || "");
   const [query, setQuery] = useState("");
   const [scanMode, setScanMode] = useState<ScanMode>("scan");
   const [removeReason, setRemoveReason] = useState<RemoveReason | "">("");
@@ -1414,6 +1427,8 @@ function InventoryView({
   const [addUnitCost, setAddUnitCost] = useState("");
   const [costDraft, setCostDraft] = useState("");
   const [costDraftItemId, setCostDraftItemId] = useState("");
+  const [costSaving, setCostSaving] = useState(false);
+  const [costFeedback, setCostFeedback] = useState("");
 
   const selectedItem = missingLookup ? null : inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
@@ -1468,7 +1483,14 @@ function InventoryView({
 
   const saveCostOfGoods = async () => {
     if (!selectedItem) return;
-    await updateCost(selectedItem, visibleCostDraft || "0", purchaseSource);
+    setCostSaving(true);
+    setCostFeedback("");
+    try {
+      const saved = await updateCost(selectedItem, visibleCostDraft || "0", purchaseSource);
+      setCostFeedback(saved ? `Saved Cost Each at ${currency(Number(visibleCostDraft || 0))}.` : "Cost was not saved. Check the message above.");
+    } finally {
+      setCostSaving(false);
+    }
   };
 
   const selectFirstMatch = async (raw: string, mode = scanMode) => {
@@ -1732,9 +1754,10 @@ function InventoryView({
           <input value={purchaseSource} placeholder="Supplier / store" onChange={(event) => setPurchaseSource(event.target.value)} />
         </label>
         <small>Purchase date is recorded when you use Add Inventory below.</small>
-        <button className="export-button" onClick={() => void saveCostOfGoods()}>
-          <CheckCircle2 size={16} /> Save Cost
+        <button className="export-button" onClick={() => void saveCostOfGoods()} disabled={costSaving}>
+          <CheckCircle2 size={16} /> {costSaving ? "Saving..." : "Save Cost"}
         </button>
+        {costFeedback && <div className="cost-feedback">{costFeedback}</div>}
       </section>
 
       <section className="item-kpi-row">
@@ -2057,15 +2080,20 @@ function TopItems({ itemSales }: { itemSales: ReturnType<typeof salesByItem> }) 
   );
 }
 
-function NeedsCostTable({ items }: { items: InventoryItem[] }) {
+function NeedsCostTable({ items, onSelectItem }: { items: InventoryItem[]; onSelectItem: (itemId: string) => void }) {
   return (
     <section className="table-card">
-      <div className="card-heading"><h2>Items Needing Cost</h2><button className="tiny-button">View All</button></div>
+      <div className="card-heading"><h2>Items Needing Cost</h2><button className="tiny-button" onClick={() => onSelectItem(items[0]?.id || "")}>View All</button></div>
       <table>
         <thead><tr><th>UPC</th><th>Item</th><th>On Hand</th><th>Status</th></tr></thead>
         <tbody>
           {items.slice(0, 5).map((item) => (
-            <tr key={item.id}><td>{item.upc}</td><td>{item.product_name}</td><td>{item.quantity_on_hand}</td><td><span className="badge warning">Needs Cost</span></td></tr>
+            <tr className="clickable-row" key={item.id} onClick={() => onSelectItem(item.id)} title="Open item to add Cost of Goods">
+              <td>{item.upc}</td>
+              <td><button className="table-link-button" onClick={(event) => { event.stopPropagation(); onSelectItem(item.id); }}>{item.product_name}</button></td>
+              <td>{item.quantity_on_hand}</td>
+              <td><span className="badge warning">Needs Cost</span></td>
+            </tr>
           ))}
         </tbody>
       </table>
