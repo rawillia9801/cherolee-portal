@@ -11,6 +11,7 @@ import {
   ChevronDown,
   CircleDollarSign,
   ClipboardPaste,
+  Crown,
   Database,
   Download,
   Edit3,
@@ -30,7 +31,7 @@ import {
   Users,
   WalletCards,
 } from "lucide-react";
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -270,7 +271,7 @@ function getInventoryImpact(preview: ParsedImport | null, inventory: InventoryIt
 }
 
 function formatOptionalCurrency(value?: number) {
-  return value === undefined ? "—" : currency(value);
+  return value === undefined ? "-" : currency(value);
 }
 
 function getSavedOrderDateRange(orders: OrderView[]) {
@@ -353,6 +354,20 @@ export default function Home() {
     setImportComplete(false);
     const batchMessage = parsed.batch?.length ? ` ${parsed.batch.length} orders are ready for batch save.` : "";
     setMessage(parsed.warnings.length ? `${parsed.warnings.join(" ")}${batchMessage}` : `Preview parsed.${batchMessage} Review fields, then save.`);
+  };
+
+  const parseUploadedSettlementFile = (fileName: string, fileText: string) => {
+    setTransactionText(fileText);
+    setOrderText("");
+    const parsed = parseWalmartImport("", fileText);
+    setPreview(parsed);
+    setImportComplete(false);
+    const importsToSave = parsed.batch?.length ? parsed.batch.length : 1;
+    const transactionCount = parsed.batch?.length
+      ? parsed.batch.reduce((sum, item) => sum + item.transactions.length, 0)
+      : parsed.transactions.length;
+    const warningText = parsed.warnings.length ? ` ${parsed.warnings.join(" ")}` : "";
+    setMessage(`Parsed ${fileName}: ${importsToSave} order group(s), ${transactionCount} transaction line(s).${warningText}`);
   };
 
   const updatePreviewOrder = (key: keyof ParsedOrder, value: string) => {
@@ -510,7 +525,13 @@ export default function Home() {
     <div className="dashboard-shell">
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand">Cherolee</div>
+          <div className="portal-brand">
+            <Crown size={28} />
+            <div>
+              <strong>Cherolee Portal</strong>
+              <span>Settlement Management</span>
+            </div>
+          </div>
           <Menu size={17} />
         </div>
 
@@ -583,7 +604,7 @@ export default function Home() {
             {!configured && <span className="demo-pill"><Database size={14} /> Demo Mode</span>}
             <button className="filter-button"><CalendarDays size={15} /> {topbarDateLabel}</button>
             {activeView === "import" ? <button className="filter-button" onClick={() => setMessage("Import history is not available yet.")}>View History</button> : <button className="filter-button">Compare</button>}
-            <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : activeView === "import" ? "Export Import Results" : "Export Report"}</button>
+            <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : activeView === "import" ? "Download Template" : "Export Report"}</button>
           </div>
         </header>
 
@@ -616,6 +637,7 @@ export default function Home() {
             inventory={inventory}
             importComplete={importComplete}
             setMessage={setMessage}
+            parseUploadedSettlementFile={parseUploadedSettlementFile}
           />
         )}
 
@@ -750,8 +772,12 @@ function ImportView(props: {
   inventory: InventoryItem[];
   importComplete: boolean;
   setMessage: (value: string) => void;
+  parseUploadedSettlementFile: (fileName: string, fileText: string) => void;
 }) {
   const [previewSearch, setPreviewSearch] = useState("");
+  const [selectedFile, setSelectedFile] = useState<{ name: string; size: number } | null>(null);
+  const [fileError, setFileError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const fields: { key: keyof ParsedOrder; label: string; type?: string }[] = [
     { key: "po_number", label: "PO number" },
     { key: "walmart_order_number", label: "Walmart order" },
@@ -817,6 +843,34 @@ function ImportView(props: {
     ["Check inventory impact before saving", "Imported sales reduce inventory quantities for matched items."],
     ["Avoid duplicate imports", "Duplicate PO or order numbers should be detected before save."],
   ];
+  const handleSettlementFile = async (file: File | undefined) => {
+    if (!file) return;
+    setFileError("");
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!["csv", "tsv", "txt"].includes(extension)) {
+      setSelectedFile(null);
+      setFileError("Use a CSV, TSV, or TXT export. XLSX parsing is not enabled yet.");
+      props.setMessage("File import rejected: upload a CSV, TSV, or TXT Walmart settlement export.");
+      return;
+    }
+    try {
+      const fileText = await file.text();
+      if (!fileText.trim()) {
+        setSelectedFile(null);
+        setFileError("That file is empty.");
+        props.setMessage("File import failed: the selected file is empty.");
+        return;
+      }
+      setSelectedFile({ name: file.name, size: file.size });
+      props.parseUploadedSettlementFile(file.name, fileText);
+    } catch (error) {
+      setSelectedFile(null);
+      setFileError(error instanceof Error ? error.message : "Could not read the selected file.");
+      props.setMessage(error instanceof Error ? error.message : "Could not read the selected file.");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   return (
     <section className="settlement-page">
@@ -844,20 +898,74 @@ function ImportView(props: {
         </div>
       </div>
 
-      <div className="settlement-grid">
-        <div className="settlement-main-column">
+      <div className="settlement-workbench">
+        <div className="settlement-top-row">
           <section className="settlement-card file-import-card">
             <div>
-              <h2>Settlement File Import</h2>
-              <p>Upload Walmart settlement files when file parsing is available.</p>
+              <h2>Upload Settlement File</h2>
+              <p>Upload a real Walmart CSV, TSV, or TXT settlement export. It feeds the same preview and save flow as manual paste.</p>
             </div>
-            <div className="file-import-disabled">
+            <input
+              ref={fileInputRef}
+              className="file-input"
+              type="file"
+              accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain"
+              onChange={(event) => void handleSettlementFile(event.target.files?.[0])}
+            />
+            <button className="file-import-dropzone" type="button" onClick={() => fileInputRef.current?.click()}>
               <Archive size={30} />
-              <strong>File upload coming soon</strong>
-              <span>Use Manual Paste Import below to process live Walmart data today.</span>
-            </div>
+              <strong>{selectedFile ? selectedFile.name : "Choose settlement file"}</strong>
+              <span>{selectedFile ? `${Math.max(1, Math.round(selectedFile.size / 1024))} KB parsed from an actual uploaded file` : "CSV, TSV, or TXT. XLSX is rejected until real workbook parsing is added."}</span>
+            </button>
+            {fileError && <div className="file-error">{fileError}</div>}
           </section>
 
+          <section className="settlement-card import-status-card">
+            <div className="settlement-card-heading">
+              <div>
+                <h2>Validation Results</h2>
+                <p>{props.preview ? "Validation reflects the current parsed preview." : "Paste Walmart order details or transactions to begin."}</p>
+              </div>
+              <span className={clsx("status-badge", props.preview ? (hasWarnings ? "status-warning" : "status-success") : "status-muted")}>
+                {props.preview ? (hasWarnings ? "Needs review" : "Ready") : "Waiting"}
+              </span>
+            </div>
+            {validationChecks.map((check) => (
+              <div className="import-check-row" key={check.label}>
+                <span className={clsx("check-dot", `check-${check.state}`)}>{check.state === "success" ? <CheckCircle2 size={14} /> : check.state === "warning" ? <AlertTriangle size={14} /> : "-"}</span>
+                <div>
+                  <strong>{check.label}</strong>
+                  <small>{check.detail}</small>
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="settlement-card import-summary-card">
+            <h2>Import Summary</h2>
+            <p>Overview of the import data</p>
+            {[
+              ["Total Parsed Orders", summary.totalOrders ?? "-"],
+              ["Total Parsed Transactions", summary.totalTransactions ?? "-"],
+              ["Gross Sales", formatOptionalCurrency(summary.grossSales)],
+              ["Walmart Fees", formatOptionalCurrency(summary.walmartFees)],
+              ["Shipping Costs", formatOptionalCurrency(summary.shippingCosts)],
+              ["Refunds / Returns", formatOptionalCurrency(summary.refunds)],
+              ["Estimated COGS", formatOptionalCurrency(summary.estimatedCogs)],
+              ["Estimated Profit", formatOptionalCurrency(summary.estimatedProfit)],
+              ["Date Range", summary.dateRange ?? "-"],
+              ["Marketplace", summary.marketplace],
+            ].map(([label, value]) => (
+              <div className={clsx("summary-row", label === "Estimated Profit" && "summary-total")} key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+            {summary.missingCostCount > 0 && <div className="info-box warning">Profit estimate incomplete: some items need cost.</div>}
+          </section>
+        </div>
+
+        <div className="settlement-main-column">
           <section className="settlement-card manual-paste-card">
             <div className="settlement-card-heading">
               <div>
@@ -911,6 +1019,7 @@ function ImportView(props: {
             </section>
           )}
 
+          <div className="settlement-bottom-row">
           <section className="settlement-card preview-card">
             <div className="preview-toolbar">
               <div>
@@ -949,11 +1058,11 @@ function ImportView(props: {
                   <tbody>
                     {filteredRows.map((row) => (
                       <tr key={row.id}>
-                        <td>{row.poNumber || "—"}</td>
-                        <td>{row.walmartOrderNumber || "—"}</td>
-                        <td>{row.orderDate || "—"}</td>
-                        <td className="product-cell">{row.product || "—"}</td>
-                        <td>{row.upc || "—"}</td>
+                        <td>{row.poNumber || "-"}</td>
+                        <td>{row.walmartOrderNumber || "-"}</td>
+                        <td>{row.orderDate || "-"}</td>
+                        <td className="product-cell">{row.product || "-"}</td>
+                        <td>{row.upc || "-"}</td>
                         <td>{row.quantity}</td>
                         <td>{currency(row.unitPrice)}</td>
                         <td>{currency(row.grossSales)}</td>
@@ -985,52 +1094,8 @@ function ImportView(props: {
               </div>
             )}
           </section>
-        </div>
 
-        <aside className="settlement-side-column">
-          <section className="settlement-card import-summary-card">
-            <h2>Import Summary</h2>
-            {[
-              ["Total Parsed Orders", summary.totalOrders ?? "—"],
-              ["Total Parsed Transactions", summary.totalTransactions ?? "—"],
-              ["Gross Sales", formatOptionalCurrency(summary.grossSales)],
-              ["Walmart Fees", formatOptionalCurrency(summary.walmartFees)],
-              ["Shipping Costs", formatOptionalCurrency(summary.shippingCosts)],
-              ["Refunds / Returns", formatOptionalCurrency(summary.refunds)],
-              ["Estimated COGS", formatOptionalCurrency(summary.estimatedCogs)],
-              ["Estimated Profit", formatOptionalCurrency(summary.estimatedProfit)],
-              ["Date Range", summary.dateRange ?? "—"],
-              ["Marketplace", summary.marketplace],
-            ].map(([label, value]) => (
-              <div className={clsx("summary-row", label === "Estimated Profit" && "summary-total")} key={label}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </div>
-            ))}
-            {summary.missingCostCount > 0 && <div className="info-box warning">Profit estimate incomplete: some items need cost.</div>}
-          </section>
-
-          <section className="settlement-card import-status-card">
-            <div className="settlement-card-heading">
-              <div>
-                <h2>Import Status</h2>
-                <p>{props.preview ? "Validation reflects the current parsed preview." : "Paste Walmart order details or transactions to begin."}</p>
-              </div>
-              <span className={clsx("status-badge", props.preview ? (hasWarnings ? "status-warning" : "status-success") : "status-muted")}>
-                {props.preview ? (hasWarnings ? "Needs review" : "Ready") : "Waiting for input"}
-              </span>
-            </div>
-            {validationChecks.map((check) => (
-              <div className="import-check-row" key={check.label}>
-                <span className={clsx("check-dot", `check-${check.state}`)}>{check.state === "success" ? <CheckCircle2 size={14} /> : check.state === "warning" ? <AlertTriangle size={14} /> : "•"}</span>
-                <div>
-                  <strong>{check.label}</strong>
-                  <small>{check.detail}</small>
-                </div>
-              </div>
-            ))}
-          </section>
-
+          <aside className="settlement-side-column">
           <section className="settlement-card inventory-impact-card">
             <h2>Inventory Impact</h2>
             {impact ? (
@@ -1065,7 +1130,9 @@ function ImportView(props: {
             ))}
             <button className="tiny-button" onClick={() => props.setMessage("Documentation is not available yet.")}>View Documentation</button>
           </section>
-        </aside>
+          </aside>
+          </div>
+        </div>
       </div>
     </section>
   );

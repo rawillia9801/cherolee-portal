@@ -78,6 +78,29 @@ button {
   color: #9c6cff;
 }
 
+.portal-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #f9b728;
+}
+
+.portal-brand div {
+  display: grid;
+  gap: 2px;
+}
+
+.portal-brand strong {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.portal-brand span {
+  color: #c3c8df;
+  font-size: 11px;
+}
+
 .side-nav {
   display: grid;
   gap: 7px;
@@ -773,6 +796,25 @@ th {
   align-items: start;
 }
 
+.settlement-workbench {
+  display: grid;
+  gap: 16px;
+}
+
+.settlement-top-row {
+  display: grid;
+  grid-template-columns: 1.08fr 1fr .95fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.settlement-bottom-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  align-items: start;
+}
+
 .settlement-main-column,
 .settlement-side-column {
   display: grid;
@@ -813,14 +855,18 @@ th {
 
 .file-import-card {
   display: grid;
-  grid-template-columns: 1fr minmax(260px, 420px);
-  gap: 16px;
-  align-items: center;
+  grid-template-rows: auto 1fr auto;
+  gap: 14px;
+  align-items: stretch;
 }
 
-.file-import-disabled {
+.file-input {
+  display: none;
+}
+
+.file-import-dropzone {
   display: grid;
-  min-height: 120px;
+  min-height: 190px;
   place-items: center;
   padding: 18px;
   color: #5d4bd8;
@@ -828,18 +874,35 @@ th {
   border: 1px dashed #c8c0ff;
   border-radius: 10px;
   text-align: center;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
 }
 
-.file-import-disabled strong {
+.file-import-dropzone:hover {
+  border-color: #6b55f6;
+  box-shadow: 0 10px 24px rgb(99 79 255 / 12%);
+  transform: translateY(-1px);
+}
+
+.file-import-dropzone strong {
   margin-top: 8px;
   color: #2f246d;
   font-size: 14px;
 }
 
-.file-import-disabled span {
+.file-import-dropzone span {
   margin-top: 4px;
   color: #667085;
   font-size: 12px;
+}
+
+.file-error {
+  padding: 10px 12px;
+  color: #b42318;
+  background: #fff7f6;
+  border: 1px solid #fecdca;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .manual-paste-grid {
@@ -1823,6 +1886,7 @@ th {
   }
 
   .brand,
+  .portal-brand div,
   .nav-item span,
   .sidebar-block,
   .account div:nth-child(2),
@@ -1843,6 +1907,11 @@ th {
   }
 
   .settlement-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-top-row,
+  .settlement-bottom-row {
     grid-template-columns: 1fr;
   }
 
@@ -1869,6 +1938,7 @@ th {
 
   .nav-item span,
   .brand,
+  .portal-brand div,
   .sidebar-block,
   .account div:nth-child(2),
   .account svg {
@@ -1900,7 +1970,9 @@ th {
   .import-layout,
   .preview-grid,
   .manual-paste-grid,
-  .file-import-card {
+  .file-import-card,
+  .settlement-top-row,
+  .settlement-bottom-row {
     grid-template-columns: 1fr;
   }
 
