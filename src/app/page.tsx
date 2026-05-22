@@ -30,6 +30,7 @@ import {
   Truck,
   Users,
   WalletCards,
+  X,
 } from "lucide-react";
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -147,6 +148,8 @@ type InventoryImpact = {
   potentialOutOfStock: number;
   newRecordsNeeded: number;
 };
+
+type ReportPeriod = "Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly";
 
 function parsedImports(preview: ParsedImport | null) {
   if (!preview) return [];
@@ -278,6 +281,48 @@ function getSavedOrderDateRange(orders: OrderView[]) {
   const dates = orders.map((order) => order.order_date).filter(Boolean).sort() as string[];
   if (!dates.length) return "No date range selected";
   return dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} - ${dates[dates.length - 1]}`;
+}
+
+function getReportPeriodRows(orders: OrderView[], inventory: InventoryItem[], period: ReportPeriod) {
+  const weekNumber = (date: Date) => {
+    const copy = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = copy.getUTCDay() || 7;
+    copy.setUTCDate(copy.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(copy.getUTCFullYear(), 0, 1));
+    return Math.ceil((((copy.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  };
+
+  const keyForDate = (rawDate?: string | null) => {
+    const date = rawDate ? new Date(`${rawDate.slice(0, 10)}T00:00:00`) : new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    if (period === "Daily") return { key: `${year}-${month}-${String(date.getDate()).padStart(2, "0")}`, label: `${month}/${String(date.getDate()).padStart(2, "0")}` };
+    if (period === "Weekly") return { key: `${year}-W${String(weekNumber(date)).padStart(2, "0")}`, label: `W${String(weekNumber(date)).padStart(2, "0")} ${year}` };
+    if (period === "Monthly") return { key: `${year}-${month}`, label: date.toLocaleString("en-US", { month: "short", year: "2-digit" }) };
+    if (period === "Quarterly") {
+      const quarter = Math.floor(date.getMonth() / 3) + 1;
+      return { key: `${year}-Q${quarter}`, label: `Q${quarter} ${year}` };
+    }
+    return { key: String(year), label: String(year) };
+  };
+
+  const groups = new Map<string, { label: string; sales: number; profit: number; fees: number; shipping: number; cogs: number; orders: number }>();
+
+  orders.forEach((order) => {
+    const group = keyForDate(order.order_date || order.created_at);
+    const current = groups.get(group.key) ?? { label: group.label, sales: 0, profit: 0, fees: 0, shipping: 0, cogs: 0, orders: 0 };
+    current.sales += orderGross(order);
+    current.profit += orderProfit(order, inventory);
+    current.fees += orderFees(order);
+    current.shipping += orderShipping(order);
+    current.cogs += orderCogs(order, inventory);
+    current.orders += 1;
+    groups.set(group.key, current);
+  });
+
+  return Array.from(groups.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, value]) => value);
 }
 
 export default function Home() {
@@ -531,8 +576,8 @@ export default function Home() {
           <div className="portal-brand">
             <Crown size={28} />
             <div>
-              <strong>Cherolee Portal</strong>
-              <span>Settlement Management</span>
+              <strong>Cherolee</strong>
+              <span>Seller Analytics</span>
             </div>
           </div>
           <Menu size={17} />
@@ -627,6 +672,7 @@ export default function Home() {
               setInventoryFocusItemId(itemId);
               setActiveView("inventory");
             }}
+            onUpdateCost={updateCost}
           />
         )}
 
@@ -682,6 +728,7 @@ function DashboardView({
   inventory,
   needsCost,
   onSelectInventoryItem,
+  onUpdateCost,
 }: {
   metrics: ReturnType<typeof dashboardMetrics>;
   trend: ReturnType<typeof profitTrend>;
@@ -691,7 +738,12 @@ function DashboardView({
   inventory: InventoryItem[];
   needsCost: InventoryItem[];
   onSelectInventoryItem: (itemId: string) => void;
+  onUpdateCost: (item: InventoryItem, value: string, supplier?: string) => Promise<boolean>;
 }) {
+  const topSales = itemSales.slice(0, 5);
+  const feeRows = fees.length ? fees : [{ name: "No fees", value: 0 }];
+  const totalTopSales = topSales.reduce((sum, item) => sum + Number(item.sales || 0), 0);
+  const totalFees = feeRows.reduce((sum, fee) => sum + Number(fee.value || 0), 0);
   const cards = [
     { label: "Gross Revenue", value: currency(metrics.grossRevenue), icon: CircleDollarSign, tone: "green", delta: "12.4%" },
     { label: "Net Profit", value: currency(metrics.netProfit), icon: WalletCards, tone: "green", delta: "18.7%" },
@@ -713,7 +765,7 @@ function DashboardView({
               <div>
                 <span>{card.label}</span>
                 <strong>{card.value}</strong>
-                <small>↗ {card.delta} vs Apr 16-Apr 30</small>
+                <small>+ {card.delta} vs Apr 16-Apr 30</small>
               </div>
             </article>
           );
@@ -725,7 +777,7 @@ function DashboardView({
           <h2>Profit Trend</h2>
           <button className="tiny-button">Daily</button>
         </div>
-        <ResponsiveContainer width="100%" height={210}>
+        <ResponsiveContainer width="100%" height={236}>
           <AreaChart data={trend}>
             <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} />
@@ -737,35 +789,55 @@ function DashboardView({
         </ResponsiveContainer>
       </section>
 
-      <section className="chart-card">
+      <section className="chart-card donut-panel">
         <div className="card-heading"><h2>Sales by Item (Top 5)</h2></div>
-        <ResponsiveContainer width="100%" height={210}>
-          <PieChart>
-            <Pie data={itemSales.slice(0, 5)} dataKey="sales" nameKey="name" innerRadius={48} outerRadius={78}>
-              {itemSales.slice(0, 5).map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
-            </Pie>
-            <Tooltip formatter={(value) => currency(Number(value))} />
-          </PieChart>
-        </ResponsiveContainer>
+        <div className="donut-layout">
+          <ResponsiveContainer width="42%" height={218}>
+            <PieChart>
+              <Pie data={topSales} dataKey="sales" nameKey="name" innerRadius={52} outerRadius={82}>
+                {topSales.map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
+              </Pie>
+              <Tooltip formatter={(value) => currency(Number(value))} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="donut-legend">
+            {topSales.length ? topSales.map((item, index) => (
+              <div className="legend-row" key={item.name}>
+                <span><i style={{ background: pieColors[index % pieColors.length] }} />{item.name}</span>
+                <strong>{totalTopSales ? percent((item.sales / totalTopSales) * 100) : "0%"}</strong>
+              </div>
+            )) : <div className="preview-empty compact">No sales data yet.</div>}
+          </div>
+        </div>
       </section>
 
-      <section className="chart-card">
+      <section className="chart-card donut-panel">
         <div className="card-heading"><h2>Fee Breakdown</h2></div>
-        <ResponsiveContainer width="100%" height={210}>
-          <PieChart>
-            <Pie data={fees.length ? fees : [{ name: "No fees", value: 1 }]} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78}>
-              {(fees.length ? fees : [{ name: "No fees", value: 1 }]).map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
-            </Pie>
-            <Tooltip formatter={(value) => currency(Number(value))} />
-          </PieChart>
-        </ResponsiveContainer>
+        <div className="donut-layout">
+          <ResponsiveContainer width="42%" height={190}>
+            <PieChart>
+              <Pie data={feeRows} dataKey="value" nameKey="name" innerRadius={46} outerRadius={74}>
+                {feeRows.map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}
+              </Pie>
+              <Tooltip formatter={(value) => currency(Number(value))} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="donut-legend">
+            {feeRows.map((fee, index) => (
+              <div className="legend-row" key={fee.name}>
+                <span><i style={{ background: pieColors[index % pieColors.length] }} />{fee.name}</span>
+                <strong>{totalFees ? percent((fee.value / totalFees) * 100) : "0%"}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       <OrdersTable orders={recentOrders} inventory={inventory} compact />
       <InventorySnapshot inventory={inventory.slice(0, 5)} />
       <ProfitSummary metrics={metrics} />
       <TopItems itemSales={itemSales} />
-      <NeedsCostTable items={needsCost} onSelectItem={onSelectInventoryItem} />
+      <NeedsCostTable items={needsCost} onSelectItem={onSelectInventoryItem} onUpdateCost={onUpdateCost} />
     </div>
   );
 }
@@ -1881,11 +1953,56 @@ function InventoryView({
 }
 
 function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView[]; inventory: InventoryItem[]; itemSales: ReturnType<typeof salesByItem>; fees: ReturnType<typeof feeBreakdown> }) {
+  const [period, setPeriod] = useState<ReportPeriod>("Daily");
   const lowStock = inventory.filter((item) => item.quantity_on_hand <= item.reorder_point);
   const inventoryValue = inventory.reduce((sum, item) => sum + item.quantity_on_hand * item.unit_cost, 0);
+  const periodRows = getReportPeriodRows(orders, inventory, period);
+  const periodTotals = periodRows.reduce(
+    (totals, row) => ({
+      sales: totals.sales + row.sales,
+      profit: totals.profit + row.profit,
+      fees: totals.fees + row.fees,
+      shipping: totals.shipping + row.shipping,
+      cogs: totals.cogs + row.cogs,
+      orders: totals.orders + row.orders,
+    }),
+    { sales: 0, profit: 0, fees: 0, shipping: 0, cogs: 0, orders: 0 },
+  );
   return (
     <div className="reports-grid">
-      <ReportCard title="Profit by Date Range" value={currency(orders.reduce((sum, order) => sum + orderProfit(order, inventory), 0))} detail="May 1 - May 15, 2026" />
+      <section className="reports-period-card">
+        <div className="card-heading">
+          <div>
+            <h2>Profit Visuals</h2>
+            <span>Switch between daily, weekly, monthly, quarterly, and yearly performance.</span>
+          </div>
+          <div className="period-toggle">
+            {(["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"] as ReportPeriod[]).map((option) => (
+              <button key={option} className={clsx(period === option && "active")} type="button" onClick={() => setPeriod(option)}>
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="period-kpis">
+          <ReportCard title="Sales" value={currency(periodTotals.sales)} detail={`${periodTotals.orders} order group${periodTotals.orders === 1 ? "" : "s"}`} />
+          <ReportCard title="Profit" value={currency(periodTotals.profit)} detail="After fees, shipping, and COGS" />
+          <ReportCard title="Fees" value={currency(periodTotals.fees)} detail="Commission, WFS, service fees" />
+          <ReportCard title="COGS" value={currency(periodTotals.cogs)} detail="Matched inventory costs" />
+        </div>
+        <ResponsiveContainer width="100%" height={300}>
+          <AreaChart data={periodRows}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e7ebf5" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(value) => `$${value}`} />
+            <Tooltip formatter={(value) => currency(Number(value))} />
+            <Area type="monotone" dataKey="sales" name="Sales" stroke="#6d5dfc" fill="#6d5dfc24" strokeWidth={2} />
+            <Area type="monotone" dataKey="profit" name="Profit" stroke="#16a36a" fill="#16a36a22" strokeWidth={2} />
+            <Area type="monotone" dataKey="fees" name="Fees" stroke="#ff6b78" fill="#ff6b7818" strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </section>
+      <ReportCard title="Profit by Date Range" value={currency(periodTotals.profit)} detail={`${period} view`} />
       <ReportCard title="Inventory Value" value={currency(inventoryValue)} detail="On-hand quantity times unit cost" />
       <ReportCard title="Items Missing Cost" value={String(inventory.filter((item) => item.needs_cost || !item.unit_cost).length)} detail="Update costs to refresh profit" />
       <ReportCard title="Low Stock" value={String(lowStock.length)} detail="At or below reorder point" />
@@ -2080,21 +2197,130 @@ function TopItems({ itemSales }: { itemSales: ReturnType<typeof salesByItem> }) 
   );
 }
 
-function NeedsCostTable({ items, onSelectItem }: { items: InventoryItem[]; onSelectItem: (itemId: string) => void }) {
+function NeedsCostTable({
+  items,
+  onSelectItem,
+  onUpdateCost,
+}: {
+  items: InventoryItem[];
+  onSelectItem: (itemId: string) => void;
+  onUpdateCost: (item: InventoryItem, value: string, supplier?: string) => Promise<boolean>;
+}) {
+  const [editingId, setEditingId] = useState("");
+  const [draftCost, setDraftCost] = useState("");
+  const [savingId, setSavingId] = useState("");
+  const [errorById, setErrorById] = useState<Record<string, string>>({});
+  const [savedId, setSavedId] = useState("");
+  const [recentlySaved, setRecentlySaved] = useState<InventoryItem[]>([]);
+  const displayItems = [
+    ...recentlySaved,
+    ...items.filter((item) => !recentlySaved.some((saved) => saved.id === item.id)),
+  ].slice(0, 5);
+
+  const startEditing = (item: InventoryItem) => {
+    setEditingId(item.id);
+    setDraftCost(item.unit_cost ? String(item.unit_cost) : "");
+    setErrorById((current) => ({ ...current, [item.id]: "" }));
+    setSavedId("");
+  };
+
+  const cancelEditing = () => {
+    setEditingId("");
+    setDraftCost("");
+  };
+
+  const saveInlineCost = async (item: InventoryItem) => {
+    const trimmed = draftCost.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || Number.isNaN(parsed) || parsed < 0) {
+      setErrorById((current) => ({ ...current, [item.id]: "Enter a valid non-negative cost." }));
+      return;
+    }
+    setSavingId(item.id);
+    setErrorById((current) => ({ ...current, [item.id]: "" }));
+    const saved = await onUpdateCost(item, trimmed);
+    setSavingId("");
+    if (!saved) {
+      setErrorById((current) => ({ ...current, [item.id]: "Save failed. Your typed value is still here." }));
+      return;
+    }
+    const savedItem = { ...item, unit_cost: parsed, needs_cost: false };
+    setRecentlySaved((current) => [savedItem, ...current.filter((savedRow) => savedRow.id !== item.id)].slice(0, 2));
+    setSavedId(item.id);
+    setEditingId("");
+    setDraftCost("");
+    window.setTimeout(() => setSavedId((current) => (current === item.id ? "" : current)), 1800);
+    window.setTimeout(() => {
+      setRecentlySaved((current) => current.filter((savedRow) => savedRow.id !== item.id));
+    }, 2200);
+  };
+
   return (
-    <section className="table-card">
-      <div className="card-heading"><h2>Items Needing Cost</h2><button className="tiny-button" onClick={() => onSelectItem(items[0]?.id || "")}>View All</button></div>
+    <section className="table-card needs-cost-card">
+      <div className="card-heading">
+        <div>
+          <h2>Items Needing Cost</h2>
+          <span>Click a cost cell or badge to update COGS inline.</span>
+        </div>
+        <button className="tiny-button" onClick={() => onSelectItem(displayItems[0]?.id || "")}>View All</button>
+      </div>
       <table>
-        <thead><tr><th>UPC</th><th>Item</th><th>On Hand</th><th>Status</th></tr></thead>
+        <thead><tr><th>UPC</th><th>Item</th><th>On Hand</th><th>Cost Each</th><th>Status</th></tr></thead>
         <tbody>
-          {items.slice(0, 5).map((item) => (
-            <tr className="clickable-row" key={item.id} onClick={() => onSelectItem(item.id)} title="Open item to add Cost of Goods">
+          {displayItems.map((item) => (
+            <tr className="needs-cost-row" key={item.id} onClick={() => onSelectItem(item.id)} title="Open item to add Cost of Goods">
               <td>{item.upc}</td>
               <td><button className="table-link-button" onClick={(event) => { event.stopPropagation(); onSelectItem(item.id); }}>{item.product_name}</button></td>
               <td>{item.quantity_on_hand}</td>
-              <td><span className="badge warning">Needs Cost</span></td>
+              <td className="inline-cost-cell" onClick={(event) => event.stopPropagation()}>
+                {editingId === item.id ? (
+                  <div className="inline-cost-editor">
+                    <label>
+                      <span>$</span>
+                      <input
+                        autoFocus
+                        inputMode="decimal"
+                        value={draftCost}
+                        placeholder="0.00"
+                        onChange={(event) => setDraftCost(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void saveInlineCost(item);
+                          if (event.key === "Escape") cancelEditing();
+                        }}
+                      />
+                    </label>
+                    <button className="inline-save" type="button" disabled={savingId === item.id} onClick={() => void saveInlineCost(item)}>
+                      {savingId === item.id ? "Saving..." : <CheckCircle2 size={14} />}
+                    </button>
+                    <button className="inline-cancel" type="button" disabled={savingId === item.id} onClick={cancelEditing}>
+                      <X size={13} />
+                    </button>
+                    {errorById[item.id] && <small>{errorById[item.id]}</small>}
+                  </div>
+                ) : (
+                  <button className="missing-cost-trigger" type="button" onClick={() => startEditing(item)}>
+                    {item.unit_cost ? currency(item.unit_cost) : "Add cost"}
+                  </button>
+                )}
+              </td>
+              <td onClick={(event) => event.stopPropagation()}>
+                {savedId === item.id ? (
+                  <span className="badge success">Saved</span>
+                ) : item.unit_cost ? (
+                  <span className="badge success">{currency(item.unit_cost)}</span>
+                ) : (
+                  <button className="badge warning needs-cost-pill" type="button" onClick={() => startEditing(item)}>Needs cost</button>
+                )}
+              </td>
             </tr>
           ))}
+          {!displayItems.length && (
+            <tr>
+              <td colSpan={5}>
+                <div className="preview-empty compact">No items are missing cost right now.</div>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </section>
