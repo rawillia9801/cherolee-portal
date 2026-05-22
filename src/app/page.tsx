@@ -150,6 +150,7 @@ type InventoryImpact = {
 };
 
 type ReportPeriod = "Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly";
+type DateRange = { start: string; end: string };
 
 function parsedImports(preview: ParsedImport | null) {
   if (!preview) return [];
@@ -283,6 +284,24 @@ function getSavedOrderDateRange(orders: OrderView[]) {
   return dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} - ${dates[dates.length - 1]}`;
 }
 
+function formatDateRangeLabel(range: DateRange, fallback = "All report dates") {
+  if (range.start && range.end) return `${range.start} - ${range.end}`;
+  if (range.start) return `From ${range.start}`;
+  if (range.end) return `Through ${range.end}`;
+  return fallback;
+}
+
+function filterOrdersByDateRange(orders: OrderView[], range: DateRange) {
+  if (!range.start && !range.end) return orders;
+  return orders.filter((order) => {
+    const date = (order.order_date || order.created_at || "").slice(0, 10);
+    if (!date) return false;
+    if (range.start && date < range.start) return false;
+    if (range.end && date > range.end) return false;
+    return true;
+  });
+}
+
 function getReportPeriodRows(orders: OrderView[], inventory: InventoryItem[], period: ReportPeriod) {
   const weekNumber = (date: Date) => {
     const copy = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -339,6 +358,8 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [importComplete, setImportComplete] = useState(false);
   const [inventoryFocusItemId, setInventoryFocusItemId] = useState("");
+  const [reportDateRange, setReportDateRange] = useState<DateRange>({ start: "", end: "" });
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!configured) {
@@ -567,7 +588,9 @@ export default function Home() {
   const mainTitle = views.find((view) => view.id === activeView)?.label ?? "Dashboard";
   const topbarDateLabel = activeView === "import"
     ? getImportSummary(preview, inventory).dateRange ?? getSavedOrderDateRange(orders)
-    : "May 1 - May 15, 2026";
+    : activeView === "reports"
+      ? formatDateRangeLabel(reportDateRange)
+      : "May 1 - May 15, 2026";
 
   return (
     <div className="dashboard-shell">
@@ -650,7 +673,37 @@ export default function Home() {
           </div>
           <div className="top-actions">
             {!configured && <span className="demo-pill"><Database size={14} /> Demo Mode</span>}
-            <button className="filter-button"><CalendarDays size={15} /> {topbarDateLabel}</button>
+            <div className="date-range-control">
+              <button
+                className="filter-button"
+                onClick={() => {
+                  if (activeView === "reports") {
+                    setDatePickerOpen((open) => !open);
+                    return;
+                  }
+                  setMessage("Date range filtering is available on Reports.");
+                }}
+              >
+                <CalendarDays size={15} /> {topbarDateLabel}
+              </button>
+              {activeView === "reports" && datePickerOpen && (
+                <div className="date-range-popover">
+                  <strong>Report Date Range</strong>
+                  <label>
+                    <span>Start date</span>
+                    <input type="date" value={reportDateRange.start} onChange={(event) => setReportDateRange((current) => ({ ...current, start: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span>End date</span>
+                    <input type="date" value={reportDateRange.end} onChange={(event) => setReportDateRange((current) => ({ ...current, end: event.target.value }))} />
+                  </label>
+                  <div>
+                    <button className="tiny-button" type="button" onClick={() => setReportDateRange({ start: "", end: "" })}>All Data</button>
+                    <button className="export-button compact" type="button" onClick={() => setDatePickerOpen(false)}>Apply</button>
+                  </div>
+                </div>
+              )}
+            </div>
             {activeView === "import" ? <button className="filter-button" onClick={() => setMessage("Import history is not available yet.")}>View History</button> : <button className="filter-button">Compare</button>}
             <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : activeView === "import" ? "Download Template" : "Export Report"}</button>
           </div>
@@ -712,7 +765,7 @@ export default function Home() {
             initialSelectedItemId={inventoryFocusItemId}
           />
         )}
-        {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} itemSales={itemSales} fees={fees} />}
+        {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} dateRange={reportDateRange} />}
         {activeView === "settings" && <SettingsView configured={configured} />}
       </main>
     </div>
@@ -1952,11 +2005,22 @@ function InventoryView({
   );
 }
 
-function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView[]; inventory: InventoryItem[]; itemSales: ReturnType<typeof salesByItem>; fees: ReturnType<typeof feeBreakdown> }) {
+function ReportsView({
+  orders,
+  inventory,
+  dateRange,
+}: {
+  orders: OrderView[];
+  inventory: InventoryItem[];
+  dateRange: DateRange;
+}) {
   const [period, setPeriod] = useState<ReportPeriod>("Daily");
+  const filteredOrders = filterOrdersByDateRange(orders, dateRange);
+  const filteredItemSales = salesByItem(filteredOrders, inventory);
+  const filteredFees = feeBreakdown(filteredOrders);
   const lowStock = inventory.filter((item) => item.quantity_on_hand <= item.reorder_point);
   const inventoryValue = inventory.reduce((sum, item) => sum + item.quantity_on_hand * item.unit_cost, 0);
-  const periodRows = getReportPeriodRows(orders, inventory, period);
+  const periodRows = getReportPeriodRows(filteredOrders, inventory, period);
   const periodTotals = periodRows.reduce(
     (totals, row) => ({
       sales: totals.sales + row.sales,
@@ -1974,7 +2038,7 @@ function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView
         <div className="card-heading">
           <div>
             <h2>Profit Visuals</h2>
-            <span>Switch between daily, weekly, monthly, quarterly, and yearly performance.</span>
+            <span>{formatDateRangeLabel(dateRange, "Showing all saved order dates")} by daily, weekly, monthly, quarterly, and yearly performance.</span>
           </div>
           <div className="period-toggle">
             {(["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"] as ReportPeriod[]).map((option) => (
@@ -2002,14 +2066,14 @@ function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView
           </AreaChart>
         </ResponsiveContainer>
       </section>
-      <ReportCard title="Profit by Date Range" value={currency(periodTotals.profit)} detail={`${period} view`} />
+      <ReportCard title="Profit by Date Range" value={currency(periodTotals.profit)} detail={`${period} view · ${formatDateRangeLabel(dateRange)}`} />
       <ReportCard title="Inventory Value" value={currency(inventoryValue)} detail="On-hand quantity times unit cost" />
       <ReportCard title="Items Missing Cost" value={String(inventory.filter((item) => item.needs_cost || !item.unit_cost).length)} detail="Update costs to refresh profit" />
       <ReportCard title="Low Stock" value={String(lowStock.length)} detail="At or below reorder point" />
       <section className="chart-card wide">
         <div className="card-heading"><h2>Sales by Item</h2><button className="tiny-button">Export CSV</button></div>
         <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={itemSales.slice(0, 8)}>
+          <BarChart data={filteredItemSales.slice(0, 8)}>
             <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
             <XAxis dataKey="name" tick={{ fontSize: 10 }} />
             <YAxis tick={{ fontSize: 11 }} />
@@ -2020,7 +2084,8 @@ function ReportsView({ orders, inventory, itemSales, fees }: { orders: OrderView
       </section>
       <section className="chart-card">
         <div className="card-heading"><h2>Fees by Order</h2></div>
-        {fees.map((fee) => <div className="report-line" key={fee.name}><span>{fee.name}</span><strong>{currency(fee.value)}</strong></div>)}
+        {filteredFees.map((fee) => <div className="report-line" key={fee.name}><span>{fee.name}</span><strong>{currency(fee.value)}</strong></div>)}
+        {!filteredFees.length && <div className="preview-empty compact">No fees found for this date range.</div>}
       </section>
     </div>
   );
