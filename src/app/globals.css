@@ -38,6 +38,79 @@ button {
   cursor: pointer;
 }
 
+.visit-lock-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 22% 12%, rgb(112 103 255 / 18%), transparent 28%),
+    radial-gradient(circle at 78% 84%, rgb(20 184 166 / 12%), transparent 28%),
+    linear-gradient(180deg, #fbfcff 0%, #eef3fb 100%);
+}
+
+.visit-lock-card {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 16px;
+  padding: 28px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #e2e7f2;
+  border-radius: 20px;
+  box-shadow: 0 26px 70px rgb(18 29 63 / 14%);
+}
+
+.visit-lock-card .lock-brand {
+  color: #6246ea;
+}
+
+.visit-lock-card .lock-brand strong {
+  color: #111827;
+}
+
+.visit-lock-card h1 {
+  margin: 8px 0 0;
+  color: #101432;
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.visit-lock-card p {
+  margin: -8px 0 4px;
+  color: #667085;
+  font-size: 14px;
+}
+
+.visit-lock-card label {
+  display: grid;
+  gap: 7px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.visit-lock-card input {
+  min-height: 44px;
+  padding: 0 13px;
+  color: #111827;
+  background: #fbfcff;
+  border: 1px solid #dce2ef;
+  border-radius: 12px;
+  outline: 0;
+}
+
+.visit-lock-card input:focus {
+  border-color: #7668ff;
+  box-shadow: 0 0 0 3px rgb(112 103 255 / 13%);
+}
+
+.visit-lock-card small {
+  color: #b42318;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .dashboard-shell {
   display: grid;
   grid-template-columns: 254px 1fr;

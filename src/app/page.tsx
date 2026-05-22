@@ -32,7 +32,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type Dispatch, type FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -90,6 +90,8 @@ const views = [
 ] as const;
 
 const pieColors = ["#7067ff", "#4fc67a", "#ffb14f", "#f174a6", "#9aa7c7"];
+const visitPassword = "Today2020";
+const visitPasswordSessionKey = "cherolee-visit-unlocked";
 
 type ViewId = (typeof views)[number]["id"];
 
@@ -360,6 +362,11 @@ export default function Home() {
   const [inventoryFocusItemId, setInventoryFocusItemId] = useState("");
   const [reportDateRange, setReportDateRange] = useState<DateRange>({ start: "", end: "" });
   const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [visitUnlocked, setVisitUnlocked] = useState(() =>
+    typeof window !== "undefined" ? window.sessionStorage.getItem(visitPasswordSessionKey) === "true" : false,
+  );
+  const [visitPasswordInput, setVisitPasswordInput] = useState("");
+  const [visitPasswordError, setVisitPasswordError] = useState("");
 
   const refresh = useCallback(async () => {
     if (!configured) {
@@ -414,6 +421,51 @@ export default function Home() {
   const fees = useMemo(() => feeBreakdown(orders), [orders]);
   const recentOrders = orders.slice(0, 5);
   const needsCost = inventory.filter((item) => item.needs_cost || !Number(item.unit_cost));
+
+  const unlockVisit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (visitPasswordInput.trim() !== visitPassword) {
+      setVisitPasswordError("Incorrect password.");
+      return;
+    }
+    window.sessionStorage.setItem(visitPasswordSessionKey, "true");
+    setVisitUnlocked(true);
+    setVisitPasswordError("");
+    setVisitPasswordInput("");
+  };
+
+  if (!visitUnlocked) {
+    return (
+      <main className="visit-lock-page">
+        <form className="visit-lock-card" onSubmit={unlockVisit}>
+          <div className="portal-brand lock-brand">
+            <Crown size={30} />
+            <div>
+              <strong>Cherolee</strong>
+              <span>Seller Analytics</span>
+            </div>
+          </div>
+          <h1>Enter Password</h1>
+          <p>This dashboard is protected for this browser visit.</p>
+          <label>
+            <span>Password</span>
+            <input
+              autoFocus
+              type="password"
+              value={visitPasswordInput}
+              onChange={(event) => {
+                setVisitPasswordInput(event.target.value);
+                setVisitPasswordError("");
+              }}
+              placeholder="Password"
+            />
+          </label>
+          {visitPasswordError && <small>{visitPasswordError}</small>}
+          <button className="export-button" type="submit">Unlock Dashboard</button>
+        </form>
+      </main>
+    );
+  }
 
   const parsePreview = () => {
     const parsed = parseWalmartImport(orderText, transactionText);
