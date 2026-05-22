@@ -103,6 +103,182 @@ function inputValue(value: unknown) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+type ImportPreviewRow = {
+  id: string;
+  parsed: ParsedImport;
+  poNumber: string;
+  walmartOrderNumber: string;
+  orderDate: string;
+  product: string;
+  upc: string;
+  quantity: number;
+  unitPrice: number;
+  grossSales: number;
+  walmartFees: number;
+  shippingCosts: number;
+  refunds: number;
+  estimatedCogs: number;
+  estimatedProfit: number;
+  transactionCount: number;
+  status: "Ready" | "Needs Cost" | "Missing UPC" | "Warning";
+  warnings: string[];
+};
+
+type ImportSummary = {
+  totalOrders?: number;
+  totalTransactions?: number;
+  grossSales?: number;
+  walmartFees?: number;
+  shippingCosts?: number;
+  refunds?: number;
+  estimatedCogs?: number;
+  estimatedProfit?: number;
+  dateRange?: string;
+  marketplace: string;
+  missingCostCount: number;
+};
+
+type InventoryImpact = {
+  matched: number;
+  unknown: number;
+  needsCost: number;
+  unitsToSubtract: number;
+  potentialOutOfStock: number;
+  newRecordsNeeded: number;
+};
+
+function parsedImports(preview: ParsedImport | null) {
+  if (!preview) return [];
+  return preview.batch?.length ? preview.batch : [preview];
+}
+
+function transactionAmount(imports: ParsedImport[], matcher: (text: string) => boolean) {
+  return imports.reduce(
+    (sum, parsed) =>
+      sum + parsed.transactions.reduce((transactionSum, transaction) => {
+        const text = `${transaction.transaction_type} ${transaction.amount_type ?? ""} ${transaction.status ?? ""}`;
+        return matcher(text) ? transactionSum + Math.abs(Number(transaction.net_payable || 0)) : transactionSum;
+      }, 0),
+    0,
+  );
+}
+
+function findInventoryMatch(order: ParsedOrder, inventory: InventoryItem[]) {
+  const identifiers = [
+    order.upc,
+    order.walmart_item_id,
+  ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+
+  return inventory.find((item) => {
+    const candidates = [item.upc, item.partner_gtin, item.sku, item.partner_item_id, item.walmart_item_id]
+      .filter(Boolean)
+      .map((value) => String(value).trim().toLowerCase());
+    return identifiers.some((identifier) => candidates.includes(identifier));
+  });
+}
+
+function getParsedImportRows(preview: ParsedImport | null, inventory: InventoryItem[]): ImportPreviewRow[] {
+  return parsedImports(preview).map((parsed, index) => {
+    const order = parsed.order;
+    const match = findInventoryMatch(order, inventory);
+    const walmartFees = transactionAmount([parsed], (text) => /commission|service fee|referral|wfs|fulfillment|storage|transaction fee|fee\/reimbursement/i.test(text) && !/shipping label|refund|return refund|return shipping/i.test(text));
+    const shippingCosts = Number(order.shipping_cost || 0) || transactionAmount([parsed], (text) => /shipping label|shipping cost|shipping/i.test(text) && !/shipping fee charged/i.test(text));
+    const refunds = transactionAmount([parsed], (text) => /refund|return/i.test(text));
+    const estimatedCogs = Number(match?.unit_cost || 0) * Number(order.quantity || 0);
+    const grossSales = Number(order.subtotal || order.customer_total || 0);
+    const estimatedProfit = grossSales - walmartFees - shippingCosts - refunds - estimatedCogs;
+    const warnings = [
+      ...parsed.warnings,
+      ...(!order.upc ? ["Missing UPC / GTIN"] : []),
+      ...(!match ? ["Inventory item will need review or creation"] : []),
+      ...(match && !Number(match.unit_cost) ? ["Matched item needs cost"] : []),
+    ];
+    const status: ImportPreviewRow["status"] = !order.upc ? "Missing UPC" : match && !Number(match.unit_cost) ? "Needs Cost" : warnings.length ? "Warning" : "Ready";
+
+    return {
+      id: `${order.po_number || order.walmart_order_number || "preview"}-${index}`,
+      parsed,
+      poNumber: order.po_number,
+      walmartOrderNumber: order.walmart_order_number,
+      orderDate: order.order_date || parsed.transactions.find((transaction) => transaction.transaction_date)?.transaction_date || "",
+      product: order.product_name,
+      upc: order.upc,
+      quantity: Number(order.quantity || 0),
+      unitPrice: Number(order.unit_price || 0),
+      grossSales,
+      walmartFees,
+      shippingCosts,
+      refunds,
+      estimatedCogs,
+      estimatedProfit,
+      transactionCount: parsed.transactions.length,
+      status,
+      warnings,
+    };
+  });
+}
+
+function getImportDateRange(rows: ImportPreviewRow[]) {
+  const dates = rows.map((row) => row.orderDate).filter(Boolean).sort();
+  if (!dates.length) return undefined;
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  return first === last ? first : `${first} - ${last}`;
+}
+
+function getImportSummary(preview: ParsedImport | null, inventory: InventoryItem[]): ImportSummary {
+  const imports = parsedImports(preview);
+  if (!preview) return { marketplace: "Walmart.com", missingCostCount: 0 };
+  const rows = getParsedImportRows(preview, inventory);
+  return {
+    totalOrders: rows.length,
+    totalTransactions: imports.reduce((sum, parsed) => sum + parsed.transactions.length, 0) || rows.length,
+    grossSales: rows.reduce((sum, row) => sum + row.grossSales, 0),
+    walmartFees: rows.reduce((sum, row) => sum + row.walmartFees, 0),
+    shippingCosts: rows.reduce((sum, row) => sum + row.shippingCosts, 0),
+    refunds: rows.reduce((sum, row) => sum + row.refunds, 0),
+    estimatedCogs: rows.reduce((sum, row) => sum + row.estimatedCogs, 0),
+    estimatedProfit: rows.reduce((sum, row) => sum + row.estimatedProfit, 0),
+    dateRange: getImportDateRange(rows),
+    marketplace: "Walmart.com",
+    missingCostCount: rows.filter((row) => row.status === "Needs Cost").length,
+  };
+}
+
+function getInventoryImpact(preview: ParsedImport | null, inventory: InventoryItem[]): InventoryImpact | null {
+  if (!preview) return null;
+  const rows = getParsedImportRows(preview, inventory);
+  return rows.reduce<InventoryImpact>(
+    (impact, row) => {
+      const match = findInventoryMatch(row.parsed.order, inventory);
+      const quantity = Number(row.quantity || 0);
+      impact.unitsToSubtract += quantity;
+      if (match) {
+        impact.matched += 1;
+        if (!Number(match.unit_cost)) impact.needsCost += 1;
+        if (Number(match.quantity_on_hand || 0) - quantity < 0 || Number(match.quantity_on_hand || 0) - quantity <= Number(match.reorder_point || 0)) {
+          impact.potentialOutOfStock += 1;
+        }
+      } else {
+        impact.unknown += 1;
+        impact.newRecordsNeeded += 1;
+      }
+      return impact;
+    },
+    { matched: 0, unknown: 0, needsCost: 0, unitsToSubtract: 0, potentialOutOfStock: 0, newRecordsNeeded: 0 },
+  );
+}
+
+function formatOptionalCurrency(value?: number) {
+  return value === undefined ? "—" : currency(value);
+}
+
+function getSavedOrderDateRange(orders: OrderView[]) {
+  const dates = orders.map((order) => order.order_date).filter(Boolean).sort() as string[];
+  if (!dates.length) return "No date range selected";
+  return dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} - ${dates[dates.length - 1]}`;
+}
+
 export default function Home() {
   const configured = isSupabaseConfigured();
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
@@ -115,6 +291,7 @@ export default function Home() {
   const [transactionText, setTransactionText] = useState("");
   const [preview, setPreview] = useState<ParsedImport | null>(null);
   const [saving, setSaving] = useState(false);
+  const [importComplete, setImportComplete] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!configured) {
@@ -173,6 +350,7 @@ export default function Home() {
   const parsePreview = () => {
     const parsed = parseWalmartImport(orderText, transactionText);
     setPreview(parsed);
+    setImportComplete(false);
     const batchMessage = parsed.batch?.length ? ` ${parsed.batch.length} orders are ready for batch save.` : "";
     setMessage(parsed.warnings.length ? `${parsed.warnings.join(" ")}${batchMessage}` : `Preview parsed.${batchMessage} Review fields, then save.`);
   };
@@ -214,7 +392,7 @@ export default function Home() {
       );
       setPreview(null);
       await refresh();
-      setActiveView("dashboard");
+      setImportComplete(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Save failed.");
     } finally {
@@ -324,6 +502,9 @@ export default function Home() {
   };
 
   const mainTitle = views.find((view) => view.id === activeView)?.label ?? "Dashboard";
+  const topbarDateLabel = activeView === "import"
+    ? getImportSummary(preview, inventory).dateRange ?? getSavedOrderDateRange(orders)
+    : "May 1 - May 15, 2026";
 
   return (
     <div className="dashboard-shell">
@@ -390,13 +571,19 @@ export default function Home() {
         <header className="topbar">
           <div>
             <h1>{mainTitle === "Dashboard" ? "Dashboard Overview" : mainTitle}</h1>
-            <p>{activeView === "inventory" ? "Search, scan, add, remove, and review item performance." : "Track Walmart sales, fees, costs and profit."}</p>
+            <p>
+              {activeView === "inventory"
+                ? "Search, scan, add, remove, and review item performance."
+                : activeView === "import"
+                  ? "Import Walmart sales, fees, refunds, shipping, and inventory-impacting order data."
+                  : "Track Walmart sales, fees, costs and profit."}
+            </p>
           </div>
           <div className="top-actions">
             {!configured && <span className="demo-pill"><Database size={14} /> Demo Mode</span>}
-            <button className="filter-button"><CalendarDays size={15} /> May 1 - May 15, 2026</button>
-            <button className="filter-button">Compare</button>
-            <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : "Export Report"}</button>
+            <button className="filter-button"><CalendarDays size={15} /> {topbarDateLabel}</button>
+            {activeView === "import" ? <button className="filter-button" onClick={() => setMessage("Import history is not available yet.")}>View History</button> : <button className="filter-button">Compare</button>}
+            <button className="export-button"><Download size={15} /> {activeView === "inventory" ? "Export Inventory" : activeView === "import" ? "Export Import Results" : "Export Report"}</button>
           </div>
         </header>
 
@@ -426,6 +613,9 @@ export default function Home() {
             savePreview={savePreview}
             saving={saving}
             updatePreviewOrder={updatePreviewOrder}
+            inventory={inventory}
+            importComplete={importComplete}
+            setMessage={setMessage}
           />
         )}
 
@@ -557,7 +747,11 @@ function ImportView(props: {
   savePreview: () => void;
   saving: boolean;
   updatePreviewOrder: (key: keyof ParsedOrder, value: string) => void;
+  inventory: InventoryItem[];
+  importComplete: boolean;
+  setMessage: (value: string) => void;
 }) {
+  const [previewSearch, setPreviewSearch] = useState("");
   const fields: { key: keyof ParsedOrder; label: string; type?: string }[] = [
     { key: "po_number", label: "PO number" },
     { key: "walmart_order_number", label: "Walmart order" },
@@ -571,90 +765,308 @@ function ImportView(props: {
     { key: "customer_name", label: "Customer" },
     { key: "status", label: "Status" },
   ];
+  const rows = getParsedImportRows(props.preview, props.inventory);
+  const summary = getImportSummary(props.preview, props.inventory);
+  const impact = getInventoryImpact(props.preview, props.inventory);
+  const hasWarnings = Boolean(props.preview?.warnings.length || rows.some((row) => row.status !== "Ready"));
+  const activeStep = props.saving ? "Save" : props.importComplete ? "Complete" : hasWarnings ? "Validate" : props.preview ? "Preview" : "Input";
   const transactionRows = props.preview?.batch?.length ? props.preview.batch[0]?.transactions ?? [] : props.preview?.transactions ?? [];
-  const batchRows = props.preview?.batch ?? [];
+  const filteredRows = rows.filter((row) => {
+    const query = previewSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [row.poNumber, row.walmartOrderNumber, row.product, row.upc, row.status].some((value) => value.toLowerCase().includes(query));
+  });
+  const validationChecks = [
+    {
+      label: "Order details parsed",
+      state: props.preview ? "success" : "muted",
+      detail: props.preview ? `${rows.length || 1} parsed order group${(rows.length || 1) === 1 ? "" : "s"}` : "Waiting for paste input",
+    },
+    {
+      label: "Transaction details parsed",
+      state: props.preview ? ((summary.totalTransactions ?? 0) > 0 ? "success" : "warning") : "muted",
+      detail: props.preview ? `${summary.totalTransactions ?? 0} transaction line${(summary.totalTransactions ?? 0) === 1 ? "" : "s"}` : "No transaction data parsed yet",
+    },
+    {
+      label: "Required identifiers found",
+      state: props.preview ? (rows.every((row) => row.poNumber || row.walmartOrderNumber) ? "success" : "warning") : "muted",
+      detail: props.preview ? `${rows.filter((row) => row.poNumber || row.walmartOrderNumber).length} of ${rows.length} rows have order identifiers` : "PO/order numbers are checked after parsing",
+    },
+    {
+      label: "UPC / GTIN coverage",
+      state: props.preview ? (rows.every((row) => row.upc) ? "success" : "warning") : "muted",
+      detail: props.preview ? `${rows.filter((row) => row.upc).length} of ${rows.length} rows have UPC/GTIN` : "UPC matching is checked after parsing",
+    },
+    {
+      label: "Cost coverage",
+      state: props.preview ? (summary.missingCostCount ? "warning" : "success") : "muted",
+      detail: props.preview ? (summary.missingCostCount ? `${summary.missingCostCount} matched item${summary.missingCostCount === 1 ? "" : "s"} need cost` : "Matched item costs are available") : "COGS is checked after parsing",
+    },
+    {
+      label: "Rows ready to save",
+      state: props.preview && rows.length ? "success" : "muted",
+      detail: props.preview && rows.length ? `${rows.length} row${rows.length === 1 ? "" : "s"} ready for Confirm and Save` : "Parse preview before saving",
+    },
+  ] as const;
+  const stepOrder = ["Input", "Validate", "Preview", "Save", "Complete"];
+  const activeIndex = stepOrder.indexOf(activeStep);
+  const tips = [
+    ["Use complete Walmart order details", "Include PO number, order number, item name, UPC/GTIN, quantity, and proceeds when available."],
+    ["Paste transaction details when available", "Fees, refunds, adjustments, and shipping costs improve profit accuracy."],
+    ["Review missing costs", "Items without unit cost will be marked Needs Cost and profit may be incomplete."],
+    ["Check inventory impact before saving", "Imported sales reduce inventory quantities for matched items."],
+    ["Avoid duplicate imports", "Duplicate PO or order numbers should be detected before save."],
+  ];
 
   return (
-    <section className="import-layout">
-      <div className="paste-card">
-        <div className="card-heading"><h2>Walmart Order Details Paste</h2></div>
-        <textarea value={props.orderText} onChange={(event) => props.setOrderText(event.target.value)} />
-      </div>
-      <div className="paste-card">
-        <div className="card-heading"><h2>Walmart Transactions Paste</h2><span>Optional. Fee auto-calculates at 15%.</span></div>
-        <textarea
-          value={props.transactionText}
-          placeholder="Optional. Leave blank to auto-calculate Walmart commission at 15%."
-          onChange={(event) => props.setTransactionText(event.target.value)}
-        />
-      </div>
-      <div className="import-actions">
-        <button className="export-button" onClick={props.parsePreview}><Search size={16} /> Parse Preview</button>
-        <button className="filter-button" onClick={props.savePreview} disabled={!props.preview || props.saving}>
-          <CheckCircle2 size={16} /> {props.saving ? "Saving..." : props.preview?.batch?.length ? `Save ${props.preview.batch.length} Orders` : "Confirm and Save"}
-        </button>
+    <section className="settlement-page">
+      <div className="settlement-stepper-card">
+        <div className="settlement-stepper">
+          {stepOrder.map((step, index) => {
+            const complete = index < activeIndex || (props.importComplete && step !== "Complete");
+            const warning = step === "Validate" && hasWarnings && props.preview;
+            return (
+              <div
+                key={step}
+                className={clsx(
+                  "settlement-step",
+                  activeStep === step && "settlement-step-active",
+                  complete && "settlement-step-complete",
+                  warning && "settlement-step-warning",
+                )}
+              >
+                <span className="settlement-step-number">{complete ? <CheckCircle2 size={15} /> : warning ? <AlertTriangle size={15} /> : index + 1}</span>
+                <strong>{step}</strong>
+                <small>{["Paste or upload data", "Check required fields", "Review parsed rows", "Create records", "Dashboard updated"][index]}</small>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {props.preview && (
-        <div className="preview-card">
-          <div className="card-heading">
-            <h2>{props.preview.batch?.length ? "Settlement Report Preview" : "Editable Parse Preview"}</h2>
-            <span>Duplicate detection: PO number</span>
-          </div>
-          {props.preview.batch?.length ? (
-            <div className="batch-preview">
-              <div className="batch-summary">
-                <strong>{batchRows.length} order / transaction groups ready to import</strong>
-                <span>Rows are grouped by the best available Walmart order data. If Excel only copied rounded scientific IDs, the app uses transaction event plus item name/GTIN so separate sales do not collapse together.</span>
+      <div className="settlement-grid">
+        <div className="settlement-main-column">
+          <section className="settlement-card file-import-card">
+            <div>
+              <h2>Settlement File Import</h2>
+              <p>Upload Walmart settlement files when file parsing is available.</p>
+            </div>
+            <div className="file-import-disabled">
+              <Archive size={30} />
+              <strong>File upload coming soon</strong>
+              <span>Use Manual Paste Import below to process live Walmart data today.</span>
+            </div>
+          </section>
+
+          <section className="settlement-card manual-paste-card">
+            <div className="settlement-card-heading">
+              <div>
+                <h2>Manual Paste Import</h2>
+                <p>Paste Walmart order details and transaction details to calculate sales, fees, shipping, refunds, profit, and inventory impact.</p>
               </div>
-              <table>
-                <thead><tr><th>PO / Order group</th><th>Item name</th><th>UPC / GTIN</th><th>Qty</th><th>Sales</th><th>Shipping</th><th>Lines</th><th>Status</th></tr></thead>
-                <tbody>
-                  {batchRows.map((parsed) => {
-                    const needsReview = !parsed.order.subtotal || !parsed.order.upc || !parsed.order.product_name;
-                    return (
-                    <tr key={parsed.order.po_number}>
-                      <td>{parsed.order.po_number}</td>
-                      <td>{parsed.order.product_name}</td>
-                      <td>{parsed.order.upc || "-"}</td>
-                      <td>{parsed.order.quantity}</td>
-                      <td>{currency(parsed.order.subtotal)}</td>
-                      <td>{currency(parsed.order.shipping_cost)}</td>
-                      <td>{parsed.transactions.length}</td>
-                      <td><span className={statusClass(needsReview ? "Needs Cost" : "Parsed")}>{needsReview ? "Needs review" : "Ready"}</span></td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
             </div>
-          ) : (
-            <div className="preview-grid">
-              {fields.map((field) => (
-                <label key={field.key}>
-                  <span>{field.label}</span>
-                  <input
-                    type={field.type ?? "text"}
-                    value={inputValue(props.preview?.order[field.key])}
-                    onChange={(event) => props.updatePreviewOrder(field.key, event.target.value)}
-                  />
-                </label>
-              ))}
+            <div className="manual-paste-grid">
+              <label>
+                <span>Walmart Order Details Paste</span>
+                <textarea value={props.orderText} onChange={(event) => props.setOrderText(event.target.value)} />
+              </label>
+              <label>
+                <span>Walmart Transactions Paste</span>
+                <textarea
+                  value={props.transactionText}
+                  placeholder="Optional. Leave blank to auto-calculate Walmart commission at 15%."
+                  onChange={(event) => props.setTransactionText(event.target.value)}
+                />
+              </label>
             </div>
+            <div className="manual-paste-actions">
+              <button className="export-button" onClick={props.parsePreview}><Search size={16} /> Parse Preview</button>
+              <button className="filter-button" onClick={props.savePreview} disabled={!props.preview || props.saving}>
+                <CheckCircle2 size={16} /> {props.saving ? "Saving..." : props.preview?.batch?.length ? `Save ${props.preview.batch.length} Orders` : "Confirm and Save"}
+              </button>
+            </div>
+          </section>
+
+          {props.preview && !props.preview.batch?.length && (
+            <section className="settlement-card editable-preview-card">
+              <div className="settlement-card-heading">
+                <div>
+                  <h2>Editable Parse Preview</h2>
+                  <p>Correct parsed fields before saving. Summary and profit estimates update from these values.</p>
+                </div>
+                <span className="status-badge status-muted">Duplicate detection: PO number</span>
+              </div>
+              <div className="preview-grid">
+                {fields.map((field) => (
+                  <label key={field.key}>
+                    <span>{field.label}</span>
+                    <input
+                      type={field.type ?? "text"}
+                      value={inputValue(props.preview?.order[field.key])}
+                      onChange={(event) => props.updatePreviewOrder(field.key, event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+            </section>
           )}
-          <div className="transaction-preview">
-            <h3>{props.preview.batch?.length ? `Transactions for first order group (${props.preview.batch[0]?.order.po_number})` : "Transactions"}</h3>
-            {transactionRows.map((transaction, index) => (
-              <div key={`${transaction.transaction_type}-${index}`}>
-                <span>{transaction.transaction_type}</span>
-                <strong>{currency(transaction.net_payable)}</strong>
-                <em>{transaction.status || "Parsed"}</em>
+
+          <section className="settlement-card preview-card">
+            <div className="preview-toolbar">
+              <div>
+                <h2>Data Preview</h2>
+                <p>Review parsed Walmart order, fee, shipping, refund, and profit data before saving.</p>
+              </div>
+              <div className="preview-toolbar-actions">
+                <div className="preview-search">
+                  <Search size={15} />
+                  <input value={previewSearch} onChange={(event) => setPreviewSearch(event.target.value)} placeholder="Search preview..." />
+                </div>
+                <button className="filter-button" onClick={() => props.setMessage("Preview export coming soon.")}><Download size={15} /> Export Preview</button>
+              </div>
+            </div>
+            {filteredRows.length ? (
+              <div className="preview-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>PO Number</th>
+                      <th>Walmart Order #</th>
+                      <th>Order Date</th>
+                      <th>Product</th>
+                      <th>UPC / GTIN</th>
+                      <th>Qty</th>
+                      <th>Unit Price</th>
+                      <th>Gross / Proceeds</th>
+                      <th>Walmart Fees</th>
+                      <th>Shipping</th>
+                      <th>Refunds</th>
+                      <th>Estimated COGS</th>
+                      <th>Estimated Profit</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.poNumber || "—"}</td>
+                        <td>{row.walmartOrderNumber || "—"}</td>
+                        <td>{row.orderDate || "—"}</td>
+                        <td className="product-cell">{row.product || "—"}</td>
+                        <td>{row.upc || "—"}</td>
+                        <td>{row.quantity}</td>
+                        <td>{currency(row.unitPrice)}</td>
+                        <td>{currency(row.grossSales)}</td>
+                        <td>{currency(row.walmartFees)}</td>
+                        <td>{currency(row.shippingCosts)}</td>
+                        <td>{currency(row.refunds)}</td>
+                        <td>{currency(row.estimatedCogs)}</td>
+                        <td className={row.estimatedProfit < 0 ? "profit-negative" : "profit-positive"}>{currency(row.estimatedProfit)}</td>
+                        <td><span className={clsx("status-badge", row.status === "Ready" ? "status-success" : row.status === "Missing UPC" ? "status-danger" : "status-warning")}>{row.status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="preview-empty">No settlement data loaded yet. Paste Walmart order details or transaction details, then click Parse Preview.</div>
+            )}
+            {props.preview && (
+              <div className="transaction-preview">
+                <h3>{props.preview.batch?.length ? `Transactions for first order group (${props.preview.batch[0]?.order.po_number})` : "Transactions"}</h3>
+                {transactionRows.map((transaction, index) => (
+                  <div key={`${transaction.transaction_type}-${index}`}>
+                    <span>{transaction.transaction_type}</span>
+                    <strong>{currency(transaction.net_payable)}</strong>
+                    <em>{transaction.status || "Parsed"}</em>
+                  </div>
+                ))}
+                {!transactionRows.length && <p>No transaction lines found for this preview.</p>}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <aside className="settlement-side-column">
+          <section className="settlement-card import-summary-card">
+            <h2>Import Summary</h2>
+            {[
+              ["Total Parsed Orders", summary.totalOrders ?? "—"],
+              ["Total Parsed Transactions", summary.totalTransactions ?? "—"],
+              ["Gross Sales", formatOptionalCurrency(summary.grossSales)],
+              ["Walmart Fees", formatOptionalCurrency(summary.walmartFees)],
+              ["Shipping Costs", formatOptionalCurrency(summary.shippingCosts)],
+              ["Refunds / Returns", formatOptionalCurrency(summary.refunds)],
+              ["Estimated COGS", formatOptionalCurrency(summary.estimatedCogs)],
+              ["Estimated Profit", formatOptionalCurrency(summary.estimatedProfit)],
+              ["Date Range", summary.dateRange ?? "—"],
+              ["Marketplace", summary.marketplace],
+            ].map(([label, value]) => (
+              <div className={clsx("summary-row", label === "Estimated Profit" && "summary-total")} key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
               </div>
             ))}
-            {!transactionRows.length && <p>No transaction lines found for this preview.</p>}
-          </div>
-        </div>
-      )}
+            {summary.missingCostCount > 0 && <div className="info-box warning">Profit estimate incomplete: some items need cost.</div>}
+          </section>
+
+          <section className="settlement-card import-status-card">
+            <div className="settlement-card-heading">
+              <div>
+                <h2>Import Status</h2>
+                <p>{props.preview ? "Validation reflects the current parsed preview." : "Paste Walmart order details or transactions to begin."}</p>
+              </div>
+              <span className={clsx("status-badge", props.preview ? (hasWarnings ? "status-warning" : "status-success") : "status-muted")}>
+                {props.preview ? (hasWarnings ? "Needs review" : "Ready") : "Waiting for input"}
+              </span>
+            </div>
+            {validationChecks.map((check) => (
+              <div className="import-check-row" key={check.label}>
+                <span className={clsx("check-dot", `check-${check.state}`)}>{check.state === "success" ? <CheckCircle2 size={14} /> : check.state === "warning" ? <AlertTriangle size={14} /> : "•"}</span>
+                <div>
+                  <strong>{check.label}</strong>
+                  <small>{check.detail}</small>
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="settlement-card inventory-impact-card">
+            <h2>Inventory Impact</h2>
+            {impact ? (
+              [
+                ["Items matched to inventory", impact.matched],
+                ["Unknown UPC / GTIN", impact.unknown],
+                ["Items needing cost", impact.needsCost],
+                ["Units to subtract from inventory", impact.unitsToSubtract],
+                ["Potential out-of-stock items", impact.potentialOutOfStock],
+                ["New inventory records needed", impact.newRecordsNeeded],
+              ].map(([label, value]) => (
+                <div className="impact-row" key={label}>
+                  <span>{label}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))
+            ) : (
+              <div className="preview-empty compact">No inventory impact calculated yet.</div>
+            )}
+          </section>
+
+          <section className="settlement-card tips-card">
+            <h2>Import Tips</h2>
+            {tips.map(([title, detail], index) => (
+              <div className="tip-row" key={title}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{title}</strong>
+                  <small>{detail}</small>
+                </div>
+              </div>
+            ))}
+            <button className="tiny-button" onClick={() => props.setMessage("Documentation is not available yet.")}>View Documentation</button>
+          </section>
+        </aside>
+      </div>
     </section>
   );
 }
