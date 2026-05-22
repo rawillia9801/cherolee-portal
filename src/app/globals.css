@@ -1800,6 +1800,116 @@ th {
   box-shadow: 0 18px 45px rgb(18 29 63 / 7%);
 }
 
+.reports-control-card {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(360px, auto);
+  grid-column: 1 / -1;
+  gap: 16px;
+  align-items: center;
+  padding: 20px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 98%), rgb(255 255 255 / 92%)),
+    radial-gradient(circle at 96% 4%, rgb(112 103 255 / 11%), transparent 28%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 18px 45px rgb(18 29 63 / 7%);
+}
+
+.reports-control-card h2 {
+  margin: 0;
+  color: #101432;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.reports-control-card p {
+  margin: 5px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.report-date-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.report-date-fields label {
+  display: grid;
+  gap: 5px;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.report-date-fields input {
+  min-height: 38px;
+  padding: 0 10px;
+  color: #111827;
+  background: #fbfcff;
+  border: 1px solid #dce2ef;
+  border-radius: 9px;
+  outline: 0;
+}
+
+.report-date-fields input:focus {
+  border-color: #7668ff;
+  box-shadow: 0 0 0 3px rgb(112 103 255 / 12%);
+}
+
+.report-period-toggle {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.report-sales-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  grid-column: 1 / -1;
+  gap: 12px;
+}
+
+.report-sales-card {
+  display: grid;
+  gap: 7px;
+  min-height: 104px;
+  padding: 16px;
+  text-align: left;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  box-shadow: 0 14px 34px rgb(18 29 63 / 6%);
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+
+.report-sales-card:hover,
+.report-sales-card.active {
+  border-color: #9b8cff;
+  box-shadow: 0 18px 42px rgb(91 75 255 / 14%);
+  transform: translateY(-1px);
+}
+
+.report-sales-card span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.report-sales-card strong {
+  color: #101432;
+  font-size: 22px;
+  font-weight: 950;
+  letter-spacing: -0.03em;
+}
+
+.report-sales-card small {
+  color: #16a36a;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .period-toggle {
   display: inline-flex;
   gap: 4px;

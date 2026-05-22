@@ -40,6 +40,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -817,7 +818,7 @@ export default function Home() {
             initialSelectedItemId={inventoryFocusItemId}
           />
         )}
-        {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} dateRange={reportDateRange} />}
+        {activeView === "reports" && <ReportsView orders={orders} inventory={inventory} dateRange={reportDateRange} onDateRangeChange={setReportDateRange} />}
         {activeView === "settings" && <SettingsView configured={configured} />}
       </main>
     </div>
@@ -2061,18 +2062,30 @@ function ReportsView({
   orders,
   inventory,
   dateRange,
+  onDateRangeChange,
 }: {
   orders: OrderView[];
   inventory: InventoryItem[];
   dateRange: DateRange;
+  onDateRangeChange: Dispatch<SetStateAction<DateRange>>;
 }) {
   const [period, setPeriod] = useState<ReportPeriod>("Daily");
   const filteredOrders = filterOrdersByDateRange(orders, dateRange);
   const filteredItemSales = salesByItem(filteredOrders, inventory);
   const filteredFees = feeBreakdown(filteredOrders);
+  const reportPeriods: ReportPeriod[] = ["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"];
   const lowStock = inventory.filter((item) => item.quantity_on_hand <= item.reorder_point);
   const inventoryValue = inventory.reduce((sum, item) => sum + item.quantity_on_hand * item.unit_cost, 0);
   const periodRows = getReportPeriodRows(filteredOrders, inventory, period);
+  const periodSummaryCards = reportPeriods.map((option) => {
+    const rows = getReportPeriodRows(filteredOrders, inventory, option);
+    return {
+      period: option,
+      sales: rows.reduce((sum, row) => sum + row.sales, 0),
+      profit: rows.reduce((sum, row) => sum + row.profit, 0),
+      groups: rows.length,
+    };
+  });
   const periodTotals = periodRows.reduce(
     (totals, row) => ({
       sales: totals.sales + row.sales,
@@ -2086,18 +2099,44 @@ function ReportsView({
   );
   return (
     <div className="reports-grid">
+      <section className="reports-control-card">
+        <div>
+          <h2>Sales Reports</h2>
+          <p>Choose a date range and switch every visual between daily, weekly, monthly, quarterly, and yearly views.</p>
+        </div>
+        <div className="report-date-fields">
+          <label>
+            <span>Start date</span>
+            <input type="date" value={dateRange.start} onChange={(event) => onDateRangeChange((current) => ({ ...current, start: event.target.value }))} />
+          </label>
+          <label>
+            <span>End date</span>
+            <input type="date" value={dateRange.end} onChange={(event) => onDateRangeChange((current) => ({ ...current, end: event.target.value }))} />
+          </label>
+          <button className="tiny-button" type="button" onClick={() => onDateRangeChange({ start: "", end: "" })}>All Data</button>
+        </div>
+        <div className="period-toggle report-period-toggle">
+          {reportPeriods.map((option) => (
+            <button key={option} className={clsx(period === option && "active")} type="button" onClick={() => setPeriod(option)}>
+              {option}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="report-sales-strip">
+        {periodSummaryCards.map((card) => (
+          <button key={card.period} className={clsx("report-sales-card", period === card.period && "active")} type="button" onClick={() => setPeriod(card.period)}>
+            <span>{card.period} Sales</span>
+            <strong>{currency(card.sales)}</strong>
+            <small>{currency(card.profit)} profit across {card.groups} group{card.groups === 1 ? "" : "s"}</small>
+          </button>
+        ))}
+      </section>
       <section className="reports-period-card">
         <div className="card-heading">
           <div>
-            <h2>Profit Visuals</h2>
-            <span>{formatDateRangeLabel(dateRange, "Showing all saved order dates")} by daily, weekly, monthly, quarterly, and yearly performance.</span>
-          </div>
-          <div className="period-toggle">
-            {(["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"] as ReportPeriod[]).map((option) => (
-              <button key={option} className={clsx(period === option && "active")} type="button" onClick={() => setPeriod(option)}>
-                {option}
-              </button>
-            ))}
+            <h2>{period} Profit Visual</h2>
+            <span>{formatDateRangeLabel(dateRange, "Showing all saved order dates")} performance.</span>
           </div>
         </div>
         <div className="period-kpis">
@@ -2118,7 +2157,38 @@ function ReportsView({
           </AreaChart>
         </ResponsiveContainer>
       </section>
-      <ReportCard title="Profit by Date Range" value={currency(periodTotals.profit)} detail={`${period} view · ${formatDateRangeLabel(dateRange)}`} />
+      <ReportCard title="Profit by Date Range" value={currency(periodTotals.profit)} detail={`${period} view - ${formatDateRangeLabel(dateRange)}`} />
+      <section className="chart-card wide">
+        <div className="card-heading"><h2>{period} Sales Bars</h2><span>Gross sales and order groups</span></div>
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={periodRows}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis yAxisId="left" tick={{ fontSize: 11 }} tickFormatter={(value) => `$${value}`} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(value) => typeof value === "number" ? currency(value) : value} />
+            <Legend />
+            <Bar yAxisId="left" dataKey="sales" name="Sales" fill="#7067ff" radius={[6, 6, 0, 0]} />
+            <Bar yAxisId="right" dataKey="orders" name="Orders" fill="#14b8a6" radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+      <section className="chart-card wide">
+        <div className="card-heading"><h2>{period} Profit, Fees, Shipping, COGS</h2><span>Cost stack by selected period</span></div>
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={periodRows}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#edf0f7" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(value) => `$${value}`} />
+            <Tooltip formatter={(value) => currency(Number(value))} />
+            <Legend />
+            <Bar dataKey="profit" name="Profit" fill="#16a36a" radius={[6, 6, 0, 0]} />
+            <Bar dataKey="fees" name="Fees" fill="#ff6b78" radius={[6, 6, 0, 0]} />
+            <Bar dataKey="shipping" name="Shipping" fill="#38bdf8" radius={[6, 6, 0, 0]} />
+            <Bar dataKey="cogs" name="COGS" fill="#a78bfa" radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
       <ReportCard title="Inventory Value" value={currency(inventoryValue)} detail="On-hand quantity times unit cost" />
       <ReportCard title="Items Missing Cost" value={String(inventory.filter((item) => item.needs_cost || !item.unit_cost).length)} detail="Update costs to refresh profit" />
       <ReportCard title="Low Stock" value={String(lowStock.length)} detail="At or below reorder point" />
@@ -2138,6 +2208,24 @@ function ReportsView({
         <div className="card-heading"><h2>Fees by Order</h2></div>
         {filteredFees.map((fee) => <div className="report-line" key={fee.name}><span>{fee.name}</span><strong>{currency(fee.value)}</strong></div>)}
         {!filteredFees.length && <div className="preview-empty compact">No fees found for this date range.</div>}
+      </section>
+      <section className="table-card wide">
+        <div className="card-heading"><h2>Best Sellers</h2><span>Sorted by sales for the selected range</span></div>
+        <table>
+          <thead><tr><th>Item</th><th>Units</th><th>Sales</th><th>Profit</th><th>Margin</th></tr></thead>
+          <tbody>
+            {filteredItemSales.slice(0, 10).map((item) => (
+              <tr key={item.name}>
+                <td className="order-item-name">{item.name}</td>
+                <td>{item.units}</td>
+                <td>{currency(item.sales)}</td>
+                <td className={item.profit >= 0 ? "profit-positive" : "profit-negative"}>{currency(item.profit)}</td>
+                <td>{percent(item.sales ? (item.profit / item.sales) * 100 : 0)}</td>
+              </tr>
+            ))}
+            {!filteredItemSales.length && <tr><td colSpan={5}>No item sales found for this date range.</td></tr>}
+          </tbody>
+        </table>
       </section>
     </div>
   );
@@ -2453,3 +2541,4 @@ function ReportCard({ title, value, detail }: { title: string; value: string; de
     </section>
   );
 }
+
