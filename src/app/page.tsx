@@ -415,7 +415,7 @@ export default function Home() {
     }
   };
 
-  const updateCost = async (item: InventoryItem, value: string) => {
+  const updateCost = async (item: InventoryItem, value: string, supplier?: string) => {
     const unitCost = Number(value);
     if (Number.isNaN(unitCost) || unitCost < 0) {
       setMessage("Cost Each must be a valid zero-or-higher number.");
@@ -424,14 +424,14 @@ export default function Home() {
     if (!configured) {
       setInventory((current) =>
         current.map((candidate) =>
-          candidate.id === item.id ? { ...candidate, unit_cost: unitCost, needs_cost: !unitCost } : candidate,
+          candidate.id === item.id ? { ...candidate, unit_cost: unitCost, needs_cost: !unitCost, supplier: supplier?.trim() || candidate.supplier } : candidate,
         ),
       );
       setMessage("Demo Mode cost updated locally for preview. Supabase is required for persistence.");
       return;
     }
     try {
-      const updated = await updateInventoryItem(item.id, { unit_cost: unitCost });
+      const updated = await updateInventoryItem(item.id, { unit_cost: unitCost, ...(supplier?.trim() ? { supplier: supplier.trim() } : {}) });
       if (updated) {
         setInventory((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
       }
@@ -1392,7 +1392,7 @@ function InventoryView({
   inventory: InventoryItem[];
   orders: OrderView[];
   movements: InventoryMovement[];
-  updateCost: (item: InventoryItem, value: string) => void;
+  updateCost: (item: InventoryItem, value: string, supplier?: string) => void;
   refresh: () => Promise<void>;
   setInventory: Dispatch<SetStateAction<InventoryItem[]>>;
   setMovements: Dispatch<SetStateAction<InventoryMovement[]>>;
@@ -1412,6 +1412,8 @@ function InventoryView({
   const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().slice(0, 10));
   const [purchaseSource, setPurchaseSource] = useState("");
   const [addUnitCost, setAddUnitCost] = useState("");
+  const [costDraft, setCostDraft] = useState("");
+  const [costDraftItemId, setCostDraftItemId] = useState("");
 
   const selectedItem = missingLookup ? null : inventory.find((item) => item.id === selectedItemId) ?? inventory[0] ?? null;
   const selectedStats = selectedItem ? inventoryStats(selectedItem, orders, inventory) : null;
@@ -1461,6 +1463,13 @@ function InventoryView({
     rows.push({ date: movement.created_at?.slice(5, 10) || "Now", qty: Math.max(0, previous + Number(movement.quantity_change || 0)) });
     return rows;
   }, [{ date: "Start", qty: Math.max(0, Number(selectedItem?.quantity_on_hand || 0) - itemMovements.reduce((sum, movement) => sum + Number(movement.quantity_change || 0), 0)) }]).slice(stockRange === "7 Days" ? -7 : stockRange === "90 Days" || stockRange === "All Time" ? undefined : -30);
+
+  const visibleCostDraft = selectedItem && costDraftItemId === selectedItem.id ? costDraft : String(selectedItem?.unit_cost || "");
+
+  const saveCostOfGoods = async () => {
+    if (!selectedItem) return;
+    await updateCost(selectedItem, visibleCostDraft || "0", purchaseSource);
+  };
 
   const selectFirstMatch = async (raw: string, mode = scanMode) => {
     const lookup = normalizeLookup(raw);
@@ -1698,9 +1707,39 @@ function InventoryView({
         <div><span>Status</span><strong><span className={statusClass(itemStatus(selectedItem))}>{itemStatus(selectedItem)}</span></strong></div>
       </section>
 
+      <section className="cogs-editor-card">
+        <div>
+          <span>Cost of Goods</span>
+          <h2>Set Cost Each for this item</h2>
+          <p>This updates COGS, profit, item reports, dashboard totals, and clears Needs Cost when greater than zero.</p>
+        </div>
+        <label>
+          Cost each
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={visibleCostDraft}
+            placeholder="0.00"
+            onChange={(event) => {
+              setCostDraftItemId(selectedItem.id);
+              setCostDraft(event.target.value);
+            }}
+          />
+        </label>
+        <label>
+          Supplier / purchased from
+          <input value={purchaseSource} placeholder="Supplier / store" onChange={(event) => setPurchaseSource(event.target.value)} />
+        </label>
+        <small>Purchase date is recorded when you use Add Inventory below.</small>
+        <button className="export-button" onClick={() => void saveCostOfGoods()}>
+          <CheckCircle2 size={16} /> Save Cost
+        </button>
+      </section>
+
       <section className="item-kpi-row">
         <ReportCard title="Qty On Hand" value={String(selectedItem.quantity_on_hand)} detail="Updated just now" />
-        <section className="report-card editable-cost"><span>Cost Each</span><input defaultValue={selectedItem.unit_cost} onBlur={(event) => updateCost(selectedItem, event.target.value)} /><p>Avg landed cost</p></section>
+        <ReportCard title="Cost Each" value={currency(selectedItem.unit_cost)} detail="Avg landed cost" />
         <ReportCard title="Total Cost" value={currency(selectedItem.quantity_on_hand * selectedItem.unit_cost)} detail="Qty On Hand x Cost Each" />
         <ReportCard title="Qty Sold" value={String(qtySold)} detail="All time" />
         <ReportCard title="Returns" value={String(returns)} detail="All time" />

@@ -1576,6 +1576,57 @@ th {
   font-weight: 850;
 }
 
+.cogs-editor-card {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 180px 220px auto;
+  gap: 14px;
+  align-items: end;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #d9d2ff;
+  border-radius: 8px;
+  box-shadow: 0 14px 36px rgb(91 75 255 / 9%);
+}
+
+.cogs-editor-card h2 {
+  margin: 4px 0;
+  color: #101828;
+  font-size: 18px;
+}
+
+.cogs-editor-card p,
+.cogs-editor-card small {
+  margin: 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cogs-editor-card > div > span,
+.cogs-editor-card label {
+  color: #5d4bd8;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.cogs-editor-card input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  padding: 0 10px;
+  color: #101828;
+  background: #fbfcff;
+  border: 1px solid #dce2ef;
+  border-radius: 6px;
+  outline: 0;
+}
+
+.cogs-editor-card input:focus {
+  border-color: #7668ff;
+  box-shadow: 0 0 0 3px rgb(112 103 255 / 12%);
+}
+
 .item-kpi-row {
   display: grid;
   grid-template-columns: repeat(7, minmax(130px, 1fr));
@@ -1911,7 +1962,8 @@ th {
   }
 
   .settlement-top-row,
-  .settlement-bottom-row {
+  .settlement-bottom-row,
+  .cogs-editor-card {
     grid-template-columns: 1fr;
   }
 
@@ -1972,7 +2024,8 @@ th {
   .manual-paste-grid,
   .file-import-card,
   .settlement-top-row,
-  .settlement-bottom-row {
+  .settlement-bottom-row,
+  .cogs-editor-card {
     grid-template-columns: 1fr;
   }
 
